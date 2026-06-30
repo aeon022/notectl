@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,9 +24,10 @@ import (
 type view int
 
 const (
-	viewList   view = iota
-	viewDetail view = iota
-	viewNew    view = iota
+	viewList     view = iota
+	viewDetail   view = iota
+	viewNew      view = iota
+	viewSettings view = iota
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -64,6 +66,17 @@ var (
 			Padding(0, 3)
 )
 
+// sourceTypes is the ordered list of source backends for the settings view.
+var sourceTypes = []struct {
+	key   config.SourceType
+	label string
+	note  string
+}{
+	{config.SourceObsidian, "Obsidian", "reads .md files with YAML frontmatter"},
+	{config.SourceJoplin,   "Joplin",   "coming soon — Joplin exported notes"},
+	{config.SourceMarkdown, "Markdown", "any folder of plain .md files"},
+}
+
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 type notesLoadedMsg struct {
@@ -79,6 +92,7 @@ type writeDoneMsg struct {
 	err  error
 }
 type deletedMsg struct{ err error }
+type savedSettingsMsg struct{ err error }
 type errMsg struct{ err error }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -108,6 +122,10 @@ type Model struct {
 	newFocus   int // 0=title,1=tags,2=body
 	editNote   *models.Note // non-nil when editing existing
 
+	// settings
+	vaultInput   textinput.Model
+	sourceIdx    int // index into sourceTypes
+
 	// status
 	status     string
 	statusTime time.Time
@@ -133,11 +151,28 @@ func New() Model {
 	body.Placeholder = "Write your note here…"
 	body.ShowLineNumbers = false
 
+	vi := textinput.New()
+	vi.Placeholder = "~/Documents/MyVault"
+	vi.CharLimit = 500
+	vi.SetValue(config.VaultPathRaw())
+
+	// find current source index
+	srcIdx := 0
+	current := config.Source()
+	for i, s := range sourceTypes {
+		if s.key == current {
+			srcIdx = i
+			break
+		}
+	}
+
 	return Model{
 		searchInput: si,
 		titleInput:  ti,
 		tagsInput:   tags,
 		bodyArea:    body,
+		vaultInput:  vi,
+		sourceIdx:   srcIdx,
 	}
 }
 
@@ -205,6 +240,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		}
 
+	case savedSettingsMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.setStatus("Settings saved")
+			m.view = viewList
+			return m, loadNotesCmd(m.searchQ, m.activeFolder())
+		}
+
 	case errMsg:
 		m.err = msg.err
 
@@ -220,6 +264,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDetail(msg)
 		case viewNew:
 			return m.updateNew(msg)
+		case viewSettings:
+			return m.updateSettings(msg)
 		}
 	}
 
@@ -319,6 +365,11 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.bodyArea.SetValue(n.Body)
 			m.view = viewNew
 		}
+	case "p":
+		m.vaultInput.SetValue(config.VaultPathRaw())
+		m.vaultInput.Focus()
+		m.view = viewSettings
+		return m, nil
 	case "s":
 		if !m.syncing {
 			m.syncing = true
@@ -424,6 +475,29 @@ func (m Model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+s":
+		return m, saveSettingsCmd(m.vaultInput.Value(), sourceTypes[m.sourceIdx].key)
+	case "esc":
+		m.view = viewList
+		return m, nil
+	case "left", "h":
+		if m.sourceIdx > 0 {
+			m.sourceIdx--
+		}
+		return m, nil
+	case "right", "l":
+		if m.sourceIdx < len(sourceTypes)-1 {
+			m.sourceIdx++
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.vaultInput, cmd = m.vaultInput.Update(msg)
+	return m, cmd
+}
+
 // ── View ──────────────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
@@ -432,6 +506,8 @@ func (m Model) View() string {
 		return m.renderDetail()
 	case viewNew:
 		return m.renderNew()
+	case viewSettings:
+		return m.renderSettings()
 	default:
 		return m.renderList()
 	}
@@ -501,7 +577,7 @@ func (m Model) renderList() string {
 	} else if m.status != "" {
 		bar2 = styleOK.Render("✓ " + m.status)
 	} else {
-		bar2 = styleHelp.Render("enter:open  n:new  e:edit  d:delete  o:editor  s:sync  /:search  tab:folder  q:quit")
+		bar2 = styleHelp.Render("enter:open  n:new  e:edit  d:delete  o:editor  s:sync  p:settings  /:search  tab:folder  q:quit")
 	}
 	pad := m.width - lipgloss.Width(bar2) - lipgloss.Width(countStr)
 	if pad < 0 {
@@ -567,6 +643,52 @@ func (m Model) renderNew() string {
 	return b.String()
 }
 
+func (m Model) renderSettings() string {
+	w := min(m.width, 100)
+	var b strings.Builder
+
+	b.WriteString(styleHeader.Render("notectl") + "  " + styleMuted.Render("Settings") + "\n")
+	b.WriteString(styleDivider.Render(strings.Repeat("─", w)) + "\n\n")
+
+	// ── vault path ──
+	b.WriteString(styleLabel.Render("Vault:") + "\n")
+	b.WriteString("  " + m.vaultInput.View() + "\n")
+	// show resolved path when it contains ~
+	if strings.HasPrefix(m.vaultInput.Value(), "~") {
+		resolved := config.VaultPath()
+		exists := ""
+		if _, err := filepath.Abs(resolved); err == nil {
+			exists = styleMuted.Render("  → " + resolved)
+		}
+		b.WriteString(exists + "\n")
+	}
+	b.WriteString("\n")
+
+	// ── source type ──
+	b.WriteString(styleLabel.Render("Source:") + "\n  ")
+	for i, s := range sourceTypes {
+		if i == m.sourceIdx {
+			b.WriteString(styleTabActive.Render(s.label))
+		} else {
+			b.WriteString(styleTabInact.Render(s.label))
+		}
+		if i < len(sourceTypes)-1 {
+			b.WriteString("  ")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString("  " + styleMuted.Render(sourceTypes[m.sourceIdx].note) + "\n\n")
+
+	if m.err != nil {
+		b.WriteString(styleErr.Render("✗ "+m.err.Error()) + "\n")
+	} else if m.status != "" {
+		b.WriteString(styleOK.Render("✓ "+m.status) + "\n")
+	}
+
+	b.WriteString("\n" + styleHelp.Render("←/→:source  ctrl+s:save  esc:cancel"))
+	return b.String()
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 func loadNotesCmd(query, folder string) tea.Cmd {
@@ -603,6 +725,15 @@ func doSyncCmd() tea.Cmd {
 			_ = s.Upsert(ctx, &ns[i])
 		}
 		return syncDoneMsg{count: len(ns)}
+	}
+}
+
+func saveSettingsCmd(vaultPath string, source config.SourceType) tea.Cmd {
+	return func() tea.Msg {
+		if err := config.Save(vaultPath, source); err != nil {
+			return savedSettingsMsg{err}
+		}
+		return savedSettingsMsg{}
 	}
 }
 
