@@ -72,9 +72,10 @@ var sourceTypes = []struct {
 	label string
 	note  string
 }{
-	{config.SourceObsidian, "Obsidian", "reads .md files with YAML frontmatter"},
-	{config.SourceJoplin,   "Joplin",   "coming soon — Joplin exported notes"},
-	{config.SourceMarkdown, "Markdown", "any folder of plain .md files"},
+	{config.SourceApple,   "Apple Notes", "syncs from Apple Notes via AppleScript"},
+	{config.SourceObsidian, "Obsidian",   "reads .md files with YAML frontmatter"},
+	{config.SourceMarkdown, "Markdown",   "any folder of plain .md files"},
+	{config.SourceJoplin,   "Joplin",     "coming soon — Joplin exported notes"},
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -93,6 +94,7 @@ type writeDoneMsg struct {
 }
 type deletedMsg struct{ err error }
 type savedSettingsMsg struct{ err error }
+type appleBodyMsg struct{ body string; err error }
 type errMsg struct{ err error }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -249,6 +251,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadNotesCmd(m.searchQ, m.activeFolder())
 		}
 
+	case appleBodyMsg:
+		if msg.err == nil && m.detail != nil {
+			body := notes.StripHTML(msg.body)
+			m.detail.Body = body
+			m.vp.SetContent(body)
+		} else if msg.err != nil {
+			m.err = msg.err
+		}
+
 	case errMsg:
 		m.err = msg.err
 
@@ -340,15 +351,23 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.cursor = max(0, len(m.notes)-1)
 			}
 			m.setStatus("Deleted: " + n.Title)
-			return m, deleteNoteCmd(n.ID, n.Path)
+			ref := n.Path
+			if config.Source() == config.SourceApple {
+				ref = n.Title
+			}
+			return m, deleteNoteCmd(n.ID, ref)
 		}
 	case "enter":
 		if len(m.notes) > 0 {
 			n := m.notes[m.cursor]
 			m.detail = &n
-			m.vp.SetContent(n.Body)
 			m.vp.GotoTop()
 			m.view = viewDetail
+			if config.Source() == config.SourceApple && n.Body == "" {
+				m.vp.SetContent(styleMuted.Render("Loading…"))
+				return m, loadAppleBodyCmd(n.Title)
+			}
+			m.vp.SetContent(n.Body)
 		}
 	case "n":
 		m.editNote = nil
@@ -413,7 +432,11 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d":
 		if m.detail != nil {
-			id, path := m.detail.ID, m.detail.Path
+			ref := m.detail.Path
+			if config.Source() == config.SourceApple {
+				ref = m.detail.Title
+			}
+			id, path := m.detail.ID, ref
 			title := m.detail.Title
 			// remove from list
 			for i := range m.notes {
@@ -549,7 +572,16 @@ func (m Model) renderList() string {
 	}
 
 	if len(m.notes) == 0 {
-		b.WriteString("\n" + styleHelp.Render("  No notes — press s to sync vault, n to create") + "\n")
+		var hint string
+		switch config.Source() {
+		case config.SourceApple:
+			hint = "No notes — press s to sync from Apple Notes"
+		case config.SourceObsidian, config.SourceMarkdown:
+			hint = "No notes — press p to set vault path, then s to sync"
+		default:
+			hint = "No notes — press p to configure a source, then s to sync"
+		}
+		b.WriteString("\n" + styleHelp.Render("  "+hint) + "\n")
 	} else {
 		start := 0
 		if m.cursor >= listH {
@@ -710,7 +742,19 @@ func loadNotesCmd(query, folder string) tea.Cmd {
 
 func doSyncCmd() tea.Cmd {
 	return func() tea.Msg {
-		ns, err := notes.List(config.VaultPath())
+		src := config.Source()
+		var ns []models.Note
+		var err error
+		var srcKey string
+
+		switch src {
+		case config.SourceApple:
+			ns, err = notes.ListApple("")
+			srcKey = "apple"
+		default:
+			ns, err = notes.List(config.VaultPath())
+			srcKey = "obsidian"
+		}
 		if err != nil {
 			return syncDoneMsg{err: err}
 		}
@@ -720,7 +764,7 @@ func doSyncCmd() tea.Cmd {
 		}
 		defer s.Close()
 		ctx := context.Background()
-		_ = s.DeleteBySource(ctx, "obsidian")
+		_ = s.DeleteBySource(ctx, srcKey)
 		for i := range ns {
 			_ = s.Upsert(ctx, &ns[i])
 		}
@@ -747,7 +791,10 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 		if err := s.Delete(context.Background(), id); err != nil {
 			return deletedMsg{err}
 		}
-		if relPath != "" {
+		if config.Source() == config.SourceApple {
+			// relPath holds the title for Apple Notes
+			_ = notes.DeleteApple(relPath)
+		} else if relPath != "" {
 			_ = notes.Delete(config.VaultPath(), relPath)
 		}
 		return deletedMsg{}
@@ -776,15 +823,43 @@ func writeNoteCmd(title, body, tagsStr, folder string) tea.Cmd {
 				tags = append(tags, t)
 			}
 		}
-		n, err := notes.Write(config.VaultPath(), title, body, tags, folder)
-		if err != nil {
-			return writeDoneMsg{err: err}
+
+		var n *models.Note
+		var err error
+
+		if config.Source() == config.SourceApple {
+			if err = notes.WriteApple(title, body, folder); err != nil {
+				return writeDoneMsg{err: err}
+			}
+			n = &models.Note{
+				ID:      "apple-" + title,
+				Title:   title,
+				Body:    body,
+				Tags:    tags,
+				Folder:  folder,
+				Source:  "apple",
+				ModTime: timeNow(),
+				Created: timeNow(),
+			}
+		} else {
+			n, err = notes.Write(config.VaultPath(), title, body, tags, folder)
+			if err != nil {
+				return writeDoneMsg{err: err}
+			}
 		}
+
 		if s, serr := store.New(config.DBPath()); serr == nil {
 			defer s.Close()
 			_ = s.Upsert(context.Background(), n)
 		}
 		return writeDoneMsg{note: n}
+	}
+}
+
+func loadAppleBodyCmd(title string) tea.Cmd {
+	return func() tea.Msg {
+		body, err := notes.ReadApple(title)
+		return appleBodyMsg{body: body, err: err}
 	}
 }
 
@@ -879,6 +954,8 @@ func sameDay(a, b time.Time) bool {
 	by, bm, bd := b.Date()
 	return ay == by && am == bm && ad == bd
 }
+
+func timeNow() time.Time { return time.Now() }
 
 func max(a, b int) int {
 	if a > b {

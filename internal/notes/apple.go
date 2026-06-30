@@ -128,6 +128,47 @@ end tell
 	return folders, nil
 }
 
+// DeleteApple moves a note to Trash in Apple Notes.
+func DeleteApple(title string) error {
+	script := fmt.Sprintf(`
+tell application "Notes"
+	set found to every note whose name is %q
+	if (count of found) > 0 then
+		delete item 1 of found
+	end if
+end tell`, title)
+	_, err := runAppleScript(script)
+	return err
+}
+
+// StripHTML removes HTML tags and decodes common entities for plain-text display.
+func StripHTML(s string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+		case !inTag:
+			out.WriteRune(r)
+		}
+	}
+	result := out.String()
+	result = strings.ReplaceAll(result, "&nbsp;", " ")
+	result = strings.ReplaceAll(result, "&amp;", "&")
+	result = strings.ReplaceAll(result, "&lt;", "<")
+	result = strings.ReplaceAll(result, "&gt;", ">")
+	result = strings.ReplaceAll(result, "&quot;", `"`)
+	result = strings.ReplaceAll(result, "&#39;", "'")
+	// collapse runs of blank lines to max 2
+	for strings.Contains(result, "\n\n\n") {
+		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
+	}
+	return strings.TrimSpace(result)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func runAppleScript(script string) (string, error) {

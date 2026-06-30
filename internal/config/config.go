@@ -15,6 +15,7 @@ const (
 	SourceObsidian SourceType = "obsidian"
 	SourceJoplin   SourceType = "joplin"
 	SourceMarkdown SourceType = "markdown"
+	SourceApple    SourceType = "apple"
 )
 
 func Init() {
@@ -46,7 +47,7 @@ func Save(vaultPath string, source SourceType) error {
 func Source() SourceType {
 	s := SourceType(viper.GetString("source"))
 	switch s {
-	case SourceJoplin, SourceMarkdown:
+	case SourceApple, SourceJoplin, SourceMarkdown:
 		return s
 	default:
 		return SourceObsidian

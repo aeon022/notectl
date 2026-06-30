@@ -12,10 +12,8 @@ import (
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sync Obsidian vault (and Apple Notes if configured) into local cache",
+	Short: "Sync notes from configured source into local cache",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		apple, _ := cmd.Flags().GetBool("apple")
-
 		s, err := store.New(config.DBPath())
 		if err != nil {
 			return err
@@ -23,45 +21,41 @@ var syncCmd = &cobra.Command{
 		defer s.Close()
 		ctx := context.Background()
 
-		// ── Obsidian sync ──
-		vault := config.VaultPath()
-		fmt.Printf("Syncing Obsidian vault: %s\n", vault)
-		obsNotes, err := notes.List(vault)
-		if err != nil {
-			return fmt.Errorf("vault scan: %w", err)
-		}
-		_ = s.DeleteBySource(ctx, "obsidian")
-		for i := range obsNotes {
-			if e := s.Upsert(ctx, &obsNotes[i]); e != nil {
-				fmt.Fprintf(nil, "warn: %s: %v\n", obsNotes[i].Title, e)
-			}
-		}
-		fmt.Printf("  %d notes indexed\n", len(obsNotes))
-
-		// ── Apple Notes sync (optional) ──
-		if apple {
+		switch config.Source() {
+		case config.SourceApple:
 			folder := config.AppleFolder()
 			fmt.Print("Syncing Apple Notes")
 			if folder != "" {
 				fmt.Printf(" (folder: %s)", folder)
 			}
 			fmt.Println()
-			appleNotes, aerr := notes.ListApple(folder)
+			ns, aerr := notes.ListApple(folder)
 			if aerr != nil {
 				return fmt.Errorf("apple notes: %w", aerr)
 			}
 			_ = s.DeleteBySource(ctx, "apple")
-			for i := range appleNotes {
-				_ = s.Upsert(ctx, &appleNotes[i])
+			for i := range ns {
+				_ = s.Upsert(ctx, &ns[i])
 			}
-			fmt.Printf("  %d notes indexed\n", len(appleNotes))
-		}
+			fmt.Printf("  %d notes indexed\n", len(ns))
 
+		default:
+			vault := config.VaultPath()
+			fmt.Printf("Syncing vault: %s\n", vault)
+			ns, verr := notes.List(vault)
+			if verr != nil {
+				return fmt.Errorf("vault scan: %w", verr)
+			}
+			_ = s.DeleteBySource(ctx, "obsidian")
+			for i := range ns {
+				_ = s.Upsert(ctx, &ns[i])
+			}
+			fmt.Printf("  %d notes indexed\n", len(ns))
+		}
 		return nil
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(syncCmd)
-	syncCmd.Flags().Bool("apple", false, "Also sync Apple Notes")
 }
