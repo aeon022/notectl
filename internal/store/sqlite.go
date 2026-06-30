@@ -126,6 +126,11 @@ func (s *Store) DeleteBySource(ctx context.Context, source string) error {
 	return err
 }
 
+func (s *Store) Delete(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM notes WHERE id=?`, id)
+	return err
+}
+
 func (s *Store) ListFolders(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT folder FROM notes WHERE folder != '' ORDER BY folder`)

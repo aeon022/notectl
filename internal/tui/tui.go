@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -30,11 +31,12 @@ const (
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 var (
-	colorBlue  = lipgloss.AdaptiveColor{Light: "21", Dark: "39"}
-	colorMuted = lipgloss.AdaptiveColor{Light: "244", Dark: "240"}
-	colorGreen = lipgloss.AdaptiveColor{Light: "28", Dark: "42"}
-	colorRed   = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
-	colorSubtle = lipgloss.AdaptiveColor{Light: "250", Dark: "237"}
+	colorBlue   = lipgloss.AdaptiveColor{Light: "25",  Dark: "33"}
+	colorGreen  = lipgloss.AdaptiveColor{Light: "28",  Dark: "42"}
+	colorRed    = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
+	colorMuted  = lipgloss.AdaptiveColor{Light: "243", Dark: "246"}
+	colorSubtle = lipgloss.AdaptiveColor{Light: "250", Dark: "239"}
+	colorTabBg  = lipgloss.AdaptiveColor{Light: "252", Dark: "235"}
 
 	styleHeader  = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
 	styleDivider = lipgloss.NewStyle().Foreground(colorSubtle)
@@ -43,8 +45,11 @@ var (
 	styleOK      = lipgloss.NewStyle().Foreground(colorGreen)
 	styleMuted   = lipgloss.NewStyle().Foreground(colorMuted)
 	styleBold    = lipgloss.NewStyle().Bold(true)
-	styleSelected = lipgloss.NewStyle().Background(lipgloss.AdaptiveColor{Light: "254", Dark: "236"}).Bold(true)
-	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33", Dark: "75"})
+	styleSelected = lipgloss.NewStyle().
+			Background(lipgloss.AdaptiveColor{Light: "189", Dark: "17"}).
+			Foreground(lipgloss.AdaptiveColor{Light: "16",  Dark: "255"}).
+			Bold(true)
+	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33",  Dark: "75"})
 	styleFolder  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "136", Dark: "178"})
 	styleLabel   = lipgloss.NewStyle().Foreground(colorBlue).Width(9)
 	styleSyncing = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"})
@@ -52,8 +57,11 @@ var (
 	styleTabActive = lipgloss.NewStyle().Bold(true).
 			Foreground(lipgloss.Color("15")).
 			Background(colorBlue).
-			Padding(0, 2)
-	styleTabInact = lipgloss.NewStyle().Foreground(colorMuted).Padding(0, 2)
+			Padding(0, 3)
+	styleTabInact = lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "237", Dark: "252"}).
+			Background(colorTabBg).
+			Padding(0, 3)
 )
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -70,6 +78,7 @@ type writeDoneMsg struct {
 	note *models.Note
 	err  error
 }
+type deletedMsg struct{ err error }
 type errMsg struct{ err error }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -191,6 +200,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadNotesCmd(m.searchQ, m.activeFolder())
 		}
 
+	case deletedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		}
+
 	case errMsg:
 		m.err = msg.err
 
@@ -258,10 +272,30 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
+	case "pgdown", "ctrl+f":
+		page := max(1, m.height/3)
+		m.cursor = min(len(m.notes)-1, m.cursor+page)
+	case "pgup", "ctrl+b":
+		page := max(1, m.height/3)
+		m.cursor = max(0, m.cursor-page)
 	case "g":
 		m.cursor = 0
 	case "G":
 		m.cursor = max(0, len(m.notes)-1)
+	case "o":
+		if len(m.notes) > 0 {
+			return m, openNoteCmd(m.notes[m.cursor].Path)
+		}
+	case "d":
+		if len(m.notes) > 0 {
+			n := m.notes[m.cursor]
+			m.notes = append(m.notes[:m.cursor], m.notes[m.cursor+1:]...)
+			if m.cursor >= len(m.notes) {
+				m.cursor = max(0, len(m.notes)-1)
+			}
+			m.setStatus("Deleted: " + n.Title)
+			return m, deleteNoteCmd(n.ID, n.Path)
+		}
 	case "enter":
 		if len(m.notes) > 0 {
 			n := m.notes[m.cursor]
@@ -321,6 +355,29 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.bodyArea.SetValue(m.detail.Body)
 			m.view = viewNew
 			return m, nil
+		}
+	case "o":
+		if m.detail != nil {
+			return m, openNoteCmd(m.detail.Path)
+		}
+	case "d":
+		if m.detail != nil {
+			id, path := m.detail.ID, m.detail.Path
+			title := m.detail.Title
+			// remove from list
+			for i := range m.notes {
+				if m.notes[i].ID == id {
+					m.notes = append(m.notes[:i], m.notes[i+1:]...)
+					if m.cursor >= len(m.notes) {
+						m.cursor = max(0, len(m.notes)-1)
+					}
+					break
+				}
+			}
+			m.detail = nil
+			m.view = viewList
+			m.setStatus("Deleted: " + title)
+			return m, deleteNoteCmd(id, path)
 		}
 	}
 	var cmd tea.Cmd
@@ -393,7 +450,7 @@ func (m Model) renderList() string {
 			parts = append(parts, styleTabInact.Render(t))
 		}
 	}
-	bar := strings.Join(parts, "")
+	bar := strings.Join(parts, "  ")
 	if m.syncing {
 		bar += "  " + styleSyncing.Render("⟳ syncing…")
 	}
@@ -444,7 +501,7 @@ func (m Model) renderList() string {
 	} else if m.status != "" {
 		bar2 = styleOK.Render("✓ " + m.status)
 	} else {
-		bar2 = styleHelp.Render("enter:open  n:new  e:edit  s:sync  /:search  tab:folder  q:quit")
+		bar2 = styleHelp.Render("enter:open  n:new  e:edit  d:delete  o:editor  s:sync  /:search  tab:folder  q:quit")
 	}
 	pad := m.width - lipgloss.Width(bar2) - lipgloss.Width(countStr)
 	if pad < 0 {
@@ -477,7 +534,7 @@ func (m Model) renderDetail() string {
 	if m.vp.TotalLineCount() > m.vp.Height {
 		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
 	}
-	b.WriteString("\n" + styleHelp.Render("esc:back  e:edit  ↑↓/jk:scroll  q:quit") + styleMuted.Render(pct))
+	b.WriteString("\n" + styleHelp.Render("esc:back  e:edit  d:delete  o:editor  ↑↓/jk:scroll  q:quit") + styleMuted.Render(pct))
 	return b.String()
 }
 
@@ -546,6 +603,34 @@ func doSyncCmd() tea.Cmd {
 			_ = s.Upsert(ctx, &ns[i])
 		}
 		return syncDoneMsg{count: len(ns)}
+	}
+}
+
+func deleteNoteCmd(id, relPath string) tea.Cmd {
+	return func() tea.Msg {
+		s, err := store.New(config.DBPath())
+		if err != nil {
+			return deletedMsg{err}
+		}
+		defer s.Close()
+		if err := s.Delete(context.Background(), id); err != nil {
+			return deletedMsg{err}
+		}
+		if relPath != "" {
+			_ = notes.Delete(config.VaultPath(), relPath)
+		}
+		return deletedMsg{}
+	}
+}
+
+func openNoteCmd(relPath string) tea.Cmd {
+	return func() tea.Msg {
+		if relPath == "" {
+			return nil
+		}
+		full := config.VaultPath() + "/" + relPath
+		_ = exec.Command("open", full).Start()
+		return nil
 	}
 }
 

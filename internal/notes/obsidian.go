@@ -81,6 +81,12 @@ func Write(vaultPath, title, body string, tags []string, folder string) (*models
 	return &n, nil
 }
 
+// Delete removes a note file from the vault.
+func Delete(vaultPath, relPath string) error {
+	full := filepath.Join(vaultPath, relPath)
+	return os.Remove(full)
+}
+
 // Search does a fast grep-style search through note files.
 func Search(vaultPath, query string, limit int) ([]models.Note, error) {
 	q := strings.ToLower(query)
