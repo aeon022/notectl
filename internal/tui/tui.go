@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,13 +41,13 @@ var (
 	colorSubtle = lipgloss.AdaptiveColor{Light: "250", Dark: "239"}
 	colorTabBg  = lipgloss.AdaptiveColor{Light: "252", Dark: "235"}
 
-	styleHeader  = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleDivider = lipgloss.NewStyle().Foreground(colorSubtle)
-	styleHelp    = lipgloss.NewStyle().Foreground(colorMuted)
-	styleErr     = lipgloss.NewStyle().Foreground(colorRed)
-	styleOK      = lipgloss.NewStyle().Foreground(colorGreen)
-	styleMuted   = lipgloss.NewStyle().Foreground(colorMuted)
-	styleBold    = lipgloss.NewStyle().Bold(true)
+	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
+	styleDivider  = lipgloss.NewStyle().Foreground(colorSubtle)
+	styleHelp     = lipgloss.NewStyle().Foreground(colorMuted)
+	styleErr      = lipgloss.NewStyle().Foreground(colorRed)
+	styleOK       = lipgloss.NewStyle().Foreground(colorGreen)
+	styleMuted    = lipgloss.NewStyle().Foreground(colorMuted)
+	styleBold     = lipgloss.NewStyle().Bold(true)
 	styleSelected = lipgloss.NewStyle().
 			Background(lipgloss.AdaptiveColor{Light: "189", Dark: "17"}).
 			Foreground(lipgloss.AdaptiveColor{Light: "16",  Dark: "255"}).
@@ -64,6 +65,21 @@ var (
 			Foreground(lipgloss.AdaptiveColor{Light: "237", Dark: "252"}).
 			Background(colorTabBg).
 			Padding(0, 3)
+
+	// markdown
+	styleMDH1    = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
+	styleMDH2    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "26", Dark: "39"})
+	styleMDH3    = lipgloss.NewStyle().Bold(true)
+	styleMDQuote = lipgloss.NewStyle().Foreground(colorMuted)
+	styleMDCode  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "215"})
+	styleMDBold  = lipgloss.NewStyle().Bold(true)
+	styleStrike  = lipgloss.NewStyle().Strikethrough(true).Foreground(colorMuted)
+
+	// date age colors — amber for today (matches mailctl styleToday), fading to subtle
+	styleDateToday = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"}).Bold(true)
+	styleDateWeek  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "243", Dark: "246"})
+	styleDateMonth = lipgloss.NewStyle().Foreground(colorMuted)
+	styleDateOld   = lipgloss.NewStyle().Foreground(colorSubtle)
 )
 
 // sourceTypes is the ordered list of source backends for the settings view.
@@ -72,17 +88,18 @@ var sourceTypes = []struct {
 	label string
 	note  string
 }{
-	{config.SourceApple,   "Apple Notes", "syncs from Apple Notes via AppleScript"},
-	{config.SourceObsidian, "Obsidian",   "reads .md files with YAML frontmatter"},
-	{config.SourceMarkdown, "Markdown",   "any folder of plain .md files"},
-	{config.SourceJoplin,   "Joplin",     "coming soon — Joplin exported notes"},
+	{config.SourceApple,    "Apple Notes", "syncs from Apple Notes via AppleScript"},
+	{config.SourceObsidian, "Obsidian",    "reads .md files with YAML frontmatter"},
+	{config.SourceMarkdown, "Markdown",    "any folder of plain .md files"},
+	{config.SourceJoplin,   "Joplin",      "coming soon — Joplin exported notes"},
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 type notesLoadedMsg struct {
-	notes   []models.Note
-	folders []string
+	notes        []models.Note
+	folders      []string
+	folderCounts map[string]int
 }
 type syncDoneMsg struct {
 	count int
@@ -94,7 +111,12 @@ type writeDoneMsg struct {
 }
 type deletedMsg struct{ err error }
 type savedSettingsMsg struct{ err error }
-type appleBodyMsg struct{ body string; err error }
+type appleBodyMsg struct {
+	title  string
+	body   string
+	err    error
+	goEdit bool // if true, open edit view after body is loaded
+}
 type errMsg struct{ err error }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -105,28 +127,36 @@ type Model struct {
 	height int
 
 	// list
-	notes      []models.Note
-	cursor     int
-	searchQ    string
-	searching  bool
+	notes       []models.Note
+	cursor      int
+	searchQ     string
+	searching   bool
 	searchInput textinput.Model
-	folders    []string
-	activeTab  int // 0 = All, 1+ = folder
+	folders     []string
+	activeTab   int // 0 = All, 1+ = folder
+	folderCounts map[string]int
 
-	// detail
-	detail *models.Note
-	vp     viewport.Model
+	// detail / preview
+	detail           *models.Note
+	detailLineCursor int // current line in detail body (for j/k + checkbox toggle)
+	vp               viewport.Model
+	pvp              viewport.Model // two-pane preview (right side)
 
 	// new note
 	titleInput textinput.Model
 	tagsInput  textinput.Model
 	bodyArea   textarea.Model
-	newFocus   int // 0=title,1=tags,2=body
-	editNote   *models.Note // non-nil when editing existing
+	newFocus   int
+	editNote   *models.Note
 
 	// settings
-	vaultInput   textinput.Model
-	sourceIdx    int // index into sourceTypes
+	vaultInput textinput.Model
+	sourceIdx  int
+
+	// list options
+	sortByDate bool    // true = mod_time desc (default), false = title asc
+	paneRatio  float64 // two-pane left width ratio (default 0.38)
+	confirmID  string  // non-empty = waiting for delete confirmation
 
 	// status
 	status     string
@@ -158,7 +188,6 @@ func New() Model {
 	vi.CharLimit = 500
 	vi.SetValue(config.VaultPathRaw())
 
-	// find current source index
 	srcIdx := 0
 	current := config.Source()
 	for i, s := range sourceTypes {
@@ -175,12 +204,14 @@ func New() Model {
 		bodyArea:    body,
 		vaultInput:  vi,
 		sourceIdx:   srcIdx,
+		sortByDate:  true,
+		paneRatio:   0.38,
 	}
 }
 
 func Run() error {
 	m := New()
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -196,6 +227,19 @@ func (m Model) activeFolder() string {
 	return m.folders[m.activeTab-1]
 }
 
+func (m Model) isTwoPane() bool { return m.width >= 100 }
+func (m Model) leftWidth() int {
+	if m.isTwoPane() {
+		r := m.paneRatio
+		if r <= 0 {
+			r = 0.38
+		}
+		return min(int(float64(m.width)*r), m.width-30)
+	}
+	return m.width
+}
+func (m Model) pvpWidth() int { return m.width - m.leftWidth() - 1 }
+
 // ── Update ────────────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -205,15 +249,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.vp = viewport.New(msg.Width, m.bodyHeight())
+		m.pvp = viewport.New(m.pvpWidth(), m.height-3)
 		m.bodyArea.SetWidth(msg.Width - 4)
 		m.bodyArea.SetHeight(m.height - 10)
 
 	case notesLoadedMsg:
+		// Remember which note was selected so we can restore it after the list changes
+		// (e.g. after a sync that reorders notes by mod_time).
+		var prevID string
+		if m.cursor < len(m.notes) {
+			prevID = m.notes[m.cursor].ID
+		}
+		if m.view == viewDetail && m.detail != nil {
+			prevID = m.detail.ID
+		}
 		m.notes = msg.notes
 		m.folders = msg.folders
-		if m.cursor >= len(m.notes) {
+		if msg.folderCounts != nil {
+			m.folderCounts = msg.folderCounts
+		}
+		// Try to restore cursor to the same note by ID.
+		found := false
+		if prevID != "" {
+			for i, n := range m.notes {
+				if n.ID == prevID {
+					m.cursor = i
+					found = true
+					break
+				}
+			}
+		}
+		if !found && m.cursor >= len(m.notes) {
 			m.cursor = max(0, len(m.notes)-1)
 		}
+		m = m.applySortOrder()
+		var pvCmd tea.Cmd
+		m, pvCmd = m.refreshPreview()
+		return m, pvCmd
 
 	case syncDoneMsg:
 		m.syncing = false
@@ -252,16 +324,78 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case appleBodyMsg:
-		if msg.err == nil && m.detail != nil {
+		if msg.err == nil {
 			body := notes.StripHTML(msg.body)
-			m.detail.Body = body
-			m.vp.SetContent(body)
+			// cache in notes slice
+			var cachedNote *models.Note
+			for i := range m.notes {
+				if m.notes[i].Title == msg.title {
+					m.notes[i].Body = body
+					cachedNote = &m.notes[i]
+					break
+				}
+			}
+			// update detail view if open
+			if m.detail != nil && m.detail.Title == msg.title {
+				m.detail.Body = body
+				m.vp.SetContent(renderDetailBody(body, m.detailLineCursor, m.width-2))
+			}
+			// update preview pane if still on same note
+			if len(m.notes) > 0 && m.notes[m.cursor].Title == msg.title {
+				m.pvp.SetContent(renderMarkdown(body, m.pvpWidth()))
+				m.pvp.GotoTop()
+			}
+			// if this load was triggered by pressing e, open edit view now
+			if msg.goEdit && cachedNote != nil {
+				m.status = ""
+				n := *cachedNote
+				m.editNote = &n
+				m.resetNew(n.Title)
+				m.titleInput.SetValue(n.Title)
+				m.tagsInput.SetValue(strings.Join(n.Tags, ", "))
+				m.bodyArea.SetValue(body)
+				m.view = viewNew
+				return m, nil
+			}
 		} else if msg.err != nil {
 			m.err = msg.err
 		}
 
 	case errMsg:
 		m.err = msg.err
+
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			if m.view == viewList {
+				if m.cursor > 0 {
+					m.cursor--
+					var cmd tea.Cmd
+					m, cmd = m.refreshPreview()
+					return m, cmd
+				}
+			} else if m.view == viewDetail && m.detail != nil {
+				if m.detailLineCursor > 0 {
+					m.detailLineCursor--
+					m = m.syncDetailViewport()
+				}
+			}
+		case tea.MouseButtonWheelDown:
+			if m.view == viewList {
+				if m.cursor < len(m.notes)-1 {
+					m.cursor++
+					var cmd tea.Cmd
+					m, cmd = m.refreshPreview()
+					return m, cmd
+				}
+			} else if m.view == viewDetail && m.detail != nil {
+				lines := strings.Split(m.detail.Body, "\n")
+				if m.detailLineCursor < len(lines)-1 {
+					m.detailLineCursor++
+					m = m.syncDetailViewport()
+				}
+			}
+		}
 
 	case tea.KeyMsg:
 		m.err = nil
@@ -300,13 +434,23 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searching = false
 			m.searchInput.SetValue("")
 			m.searchQ = ""
+			m.cursor = 0
+			return m, loadNotesCmd("", m.activeFolder())
 		default:
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(msg)
-			return m, cmd
+			return m, tea.Batch(cmd, loadNotesCmd(m.searchInput.Value(), m.activeFolder()))
 		}
-		return m, nil
 	}
+
+	// pending delete confirmation — any key other than d/esc cancels
+	if m.confirmID != "" && msg.String() != "d" && msg.String() != "esc" {
+		m.confirmID = ""
+		m.status = ""
+	}
+
+	prevCursor := m.cursor
+	var extraCmd tea.Cmd
 
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -330,22 +474,61 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 	case "pgdown", "ctrl+f":
-		page := max(1, m.height/3)
-		m.cursor = min(len(m.notes)-1, m.cursor+page)
+		m.cursor = min(len(m.notes)-1, m.cursor+max(1, m.height/3))
 	case "pgup", "ctrl+b":
-		page := max(1, m.height/3)
-		m.cursor = max(0, m.cursor-page)
+		m.cursor = max(0, m.cursor-max(1, m.height/3))
 	case "g":
 		m.cursor = 0
 	case "G":
 		m.cursor = max(0, len(m.notes)-1)
+	case "enter":
+		if len(m.notes) > 0 {
+			n := m.notes[m.cursor]
+			m.detail = &n
+			m.detailLineCursor = 0
+			m.vp.GotoTop()
+			m.view = viewDetail
+			if config.Source() == config.SourceApple && n.Body == "" {
+				m.vp.SetContent(styleMuted.Render("Loading…"))
+				return m, loadAppleBodyCmd(n.Title)
+			}
+			m.vp.SetContent(renderDetailBody(n.Body, 0, m.width-2))
+			return m, nil
+		}
+	case "n":
+		m.editNote = nil
+		m.resetNew("")
+		m.view = viewNew
+	case "e":
+		if len(m.notes) > 0 {
+			n := m.notes[m.cursor]
+			if config.Source() == config.SourceApple && n.Body == "" {
+				// load body first, then open edit
+				m.setStatus("Loading…")
+				return m, loadAppleBodyForEditCmd(n.Title)
+			}
+			m.editNote = &n
+			m.resetNew(n.Title)
+			m.titleInput.SetValue(n.Title)
+			m.tagsInput.SetValue(strings.Join(n.Tags, ", "))
+			m.bodyArea.SetValue(n.Body)
+			m.view = viewNew
+		}
 	case "o":
 		if len(m.notes) > 0 {
-			return m, openNoteCmd(m.notes[m.cursor].Path)
+			n := m.notes[m.cursor]
+			return m, openExternalCmd(n.Title, n.Path)
 		}
 	case "d":
 		if len(m.notes) > 0 {
 			n := m.notes[m.cursor]
+			if m.confirmID != n.ID {
+				m.confirmID = n.ID
+				m.setStatus(fmt.Sprintf("Delete \"%s\"?  d:confirm  esc:cancel", runeLimit(n.Title, 30)))
+				return m, nil
+			}
+			// confirmed
+			m.confirmID = ""
 			m.notes = append(m.notes[:m.cursor], m.notes[m.cursor+1:]...)
 			if m.cursor >= len(m.notes) {
 				m.cursor = max(0, len(m.notes)-1)
@@ -357,32 +540,26 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, deleteNoteCmd(n.ID, ref)
 		}
-	case "enter":
-		if len(m.notes) > 0 {
-			n := m.notes[m.cursor]
-			m.detail = &n
-			m.vp.GotoTop()
-			m.view = viewDetail
-			if config.Source() == config.SourceApple && n.Body == "" {
-				m.vp.SetContent(styleMuted.Render("Loading…"))
-				return m, loadAppleBodyCmd(n.Title)
-			}
-			m.vp.SetContent(n.Body)
+	case "S":
+		m.sortByDate = !m.sortByDate
+		m = m.applySortOrder()
+		if m.sortByDate {
+			m.setStatus("Sort: date")
+		} else {
+			m.setStatus("Sort: title A–Z")
 		}
-	case "n":
-		m.editNote = nil
-		m.resetNew("")
-		m.view = viewNew
-	case "e":
-		// edit current note
+	case "y":
 		if len(m.notes) > 0 {
-			n := m.notes[m.cursor]
-			m.editNote = &n
-			m.resetNew(n.Title)
-			m.titleInput.SetValue(n.Title)
-			m.tagsInput.SetValue(strings.Join(n.Tags, ", "))
-			m.bodyArea.SetValue(n.Body)
-			m.view = viewNew
+			m.setStatus("Copied: " + runeLimit(m.notes[m.cursor].Title, 30))
+			return m, copyToClipboardCmd(m.notes[m.cursor].Title)
+		}
+	case "<":
+		if m.isTwoPane() && m.paneRatio > 0.2 {
+			m.paneRatio -= 0.05
+		}
+	case ">":
+		if m.isTwoPane() && m.paneRatio < 0.65 {
+			m.paneRatio += 0.05
 		}
 	case "p":
 		m.vaultInput.SetValue(config.VaultPathRaw())
@@ -392,7 +569,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		if !m.syncing {
 			m.syncing = true
-			m.setStatus("Syncing vault…")
+			m.setStatus("Syncing…")
 			return m, doSyncCmd()
 		}
 	case "/":
@@ -400,6 +577,11 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchInput.Focus()
 		m.searchInput.SetValue("")
 	case "esc":
+		if m.confirmID != "" {
+			m.confirmID = ""
+			m.status = ""
+			return m, nil
+		}
 		if m.searchQ != "" {
 			m.searchQ = ""
 			m.searchInput.SetValue("")
@@ -407,6 +589,33 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, loadNotesCmd("", m.activeFolder())
 		}
 	}
+
+	// refresh preview when cursor moved
+	if m.cursor != prevCursor {
+		var cmd tea.Cmd
+		m, cmd = m.refreshPreview()
+		extraCmd = cmd
+	}
+	return m, extraCmd
+}
+
+// refreshPreview updates the two-pane preview viewport for the current cursor note.
+func (m Model) refreshPreview() (Model, tea.Cmd) {
+	if !m.isTwoPane() || len(m.notes) == 0 {
+		return m, nil
+	}
+	n := m.notes[m.cursor]
+	if n.Body != "" {
+		m.pvp.SetContent(renderMarkdown(n.Body, m.pvpWidth()))
+		m.pvp.GotoTop()
+		return m, nil
+	}
+	if config.Source() == config.SourceApple {
+		m.pvp.SetContent(styleMuted.Render("Loading…"))
+		m.pvp.GotoTop()
+		return m, loadAppleBodyCmd(n.Title)
+	}
+	m.pvp.SetContent("")
 	return m, nil
 }
 
@@ -415,7 +624,9 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc":
 		m.view = viewList
 		m.detail = nil
+		m.detailLineCursor = 0
 		return m, nil
+
 	case "e":
 		if m.detail != nil {
 			m.editNote = m.detail
@@ -426,19 +637,19 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = viewNew
 			return m, nil
 		}
+
 	case "o":
 		if m.detail != nil {
-			return m, openNoteCmd(m.detail.Path)
+			return m, openExternalCmd(m.detail.Title, m.detail.Path)
 		}
+
 	case "d":
 		if m.detail != nil {
 			ref := m.detail.Path
 			if config.Source() == config.SourceApple {
 				ref = m.detail.Title
 			}
-			id, path := m.detail.ID, ref
-			title := m.detail.Title
-			// remove from list
+			id, path, title := m.detail.ID, ref, m.detail.Title
 			for i := range m.notes {
 				if m.notes[i].ID == id {
 					m.notes = append(m.notes[:i], m.notes[i+1:]...)
@@ -449,14 +660,84 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.detail = nil
+			m.detailLineCursor = 0
 			m.view = viewList
 			m.setStatus("Deleted: " + title)
 			return m, deleteNoteCmd(id, path)
 		}
+
+	case "j", "down":
+		if m.detail != nil {
+			lines := strings.Split(m.detail.Body, "\n")
+			if m.detailLineCursor < len(lines)-1 {
+				m.detailLineCursor++
+				m = m.syncDetailViewport()
+			}
+		}
+
+	case "k", "up":
+		if m.detail != nil && m.detailLineCursor > 0 {
+			m.detailLineCursor--
+			m = m.syncDetailViewport()
+		}
+
+	case "pgdown", "ctrl+f":
+		if m.detail != nil {
+			lines := strings.Split(m.detail.Body, "\n")
+			m.detailLineCursor = min(len(lines)-1, m.detailLineCursor+max(1, m.vp.Height/2))
+			m = m.syncDetailViewport()
+		}
+
+	case "pgup", "ctrl+b":
+		if m.detail != nil {
+			m.detailLineCursor = max(0, m.detailLineCursor-max(1, m.vp.Height/2))
+			m = m.syncDetailViewport()
+		}
+
+	case " ":
+		// toggle ☐ ↔ ☑ on current line, write back to Apple Notes
+		if m.detail != nil {
+			lines := strings.Split(m.detail.Body, "\n")
+			if m.detailLineCursor < len(lines) {
+				toggled := toggleCheckboxLine(lines[m.detailLineCursor])
+				if toggled != lines[m.detailLineCursor] {
+					lines[m.detailLineCursor] = toggled
+					newBody := strings.Join(lines, "\n")
+					m.detail.Body = newBody
+					for i := range m.notes {
+						if m.notes[i].ID == m.detail.ID {
+							m.notes[i].Body = newBody
+							break
+						}
+					}
+					m = m.syncDetailViewport()
+					if config.Source() == config.SourceApple {
+						return m, saveAppleBodyCmd(m.detail.Title, newBody)
+					}
+				}
+			}
+		}
 	}
-	var cmd tea.Cmd
-	m.vp, cmd = m.vp.Update(msg)
-	return m, cmd
+	return m, nil
+}
+
+// syncDetailViewport re-renders the detail viewport content and scrolls to keep
+// detailLineCursor visible.
+func (m Model) syncDetailViewport() Model {
+	if m.detail == nil {
+		return m
+	}
+	m.vp.SetContent(renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2))
+	// scroll so cursor line is always visible
+	if m.detailLineCursor < m.vp.YOffset {
+		m.vp.YOffset = m.detailLineCursor
+	} else if m.detailLineCursor >= m.vp.YOffset+m.vp.Height {
+		m.vp.YOffset = m.detailLineCursor - m.vp.Height + 1
+		if m.vp.YOffset < 0 {
+			m.vp.YOffset = 0
+		}
+	}
+	return m
 }
 
 func (m Model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -521,6 +802,56 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// ── Detail body helpers ───────────────────────────────────────────────────────
+
+// renderDetailBody renders the note body with line-level cursor highlighting.
+// Checkbox lines get ☐/☑ preserved; the selected line is highlighted.
+func renderDetailBody(body string, cursor, width int) string {
+	if body == "" {
+		return styleMuted.Render("(empty)")
+	}
+	lines := strings.Split(body, "\n")
+	var sb strings.Builder
+	for i, line := range lines {
+		if i == cursor {
+			sb.WriteString(styleSelected.Width(width).Render(line) + "\n")
+		} else if strings.HasPrefix(line, "☑ ") {
+			sb.WriteString(styleStrike.Render(line) + "\n")
+		} else {
+			sb.WriteString(renderMDLine(line, width) + "\n")
+		}
+	}
+	return sb.String()
+}
+
+// toggleCheckboxLine toggles list items and checkboxes.
+// • item  →  ☑ item  (check off a regular bullet)
+// ☑ item  →  • item  (uncheck back to bullet)
+// ☐ item  →  ☑ item  (check an Apple-checklist item)
+func toggleCheckboxLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "• "):
+		return "☑ " + line[len("• "):]
+	case strings.HasPrefix(line, "☑ "):
+		return "• " + line[len("☑ "):]
+	case strings.HasPrefix(line, "☐ "):
+		return "☑ " + line[len("☐ "):]
+	}
+	return line
+}
+
+// saveAppleBodyCmd converts the text body (with ☐/☑) back to HTML and writes
+// it to the Apple Notes note with the given title.
+func saveAppleBodyCmd(title, textBody string) tea.Cmd {
+	return func() tea.Msg {
+		html := notes.TextToHTML(textBody)
+		if err := notes.UpdateBody(title, html); err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
+}
+
 // ── View ──────────────────────────────────────────────────────────────────────
 
 func (m Model) View() string {
@@ -537,26 +868,21 @@ func (m Model) View() string {
 }
 
 func (m Model) renderList() string {
-	var b strings.Builder
+	if m.isTwoPane() {
+		return m.renderTwoPane()
+	}
+	return m.renderSinglePane()
+}
 
-	// ── tab bar: All | Folder1 | Folder2 ──
-	tabs := append([]string{"All"}, m.folders...)
-	var parts []string
-	for i, t := range tabs {
-		if i == m.activeTab {
-			parts = append(parts, styleTabActive.Render(t))
-		} else {
-			parts = append(parts, styleTabInact.Render(t))
-		}
-	}
-	bar := strings.Join(parts, "  ")
-	if m.syncing {
-		bar += "  " + styleSyncing.Render("⟳ syncing…")
-	}
-	b.WriteString(bar + "\n")
+// ── Single-pane (narrow terminals) ────────────────────────────────────────────
+
+func (m Model) renderSinglePane() string {
+	var b strings.Builder
+	b.WriteString(m.renderAppHeader(m.width) + "\n")
+	b.WriteString(m.renderTabBar(m.width) + "\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 
-	overhead := 3 // tab + divider + status
+	overhead := 4 // header + tabbar + divider + helpbar
 	if m.searching {
 		b.WriteString("  " + m.searchInput.View() + "\n\n")
 		overhead += 2
@@ -572,51 +898,201 @@ func (m Model) renderList() string {
 	}
 
 	if len(m.notes) == 0 {
-		var hint string
-		switch config.Source() {
-		case config.SourceApple:
-			hint = "No notes — press s to sync from Apple Notes"
-		case config.SourceObsidian, config.SourceMarkdown:
-			hint = "No notes — press p to set vault path, then s to sync"
-		default:
-			hint = "No notes — press p to configure a source, then s to sync"
-		}
-		b.WriteString("\n" + styleHelp.Render("  "+hint) + "\n")
+		b.WriteString("\n" + styleHelp.Render("  "+emptyHint()) + "\n")
 	} else {
+		lines, cursorLine := m.buildListLines(m.width, true)
 		start := 0
-		if m.cursor >= listH {
-			start = m.cursor - listH + 1
+		if cursorLine >= listH {
+			start = cursorLine - listH + 1
 		}
-		end := min(len(m.notes), start+listH)
-		for i := start; i < end; i++ {
-			n := &m.notes[i]
-			line := formatNoteRow(n, m.width)
-			if i == m.cursor {
-				line = styleSelected.Width(m.width).Render(line)
-			}
-			b.WriteString(line + "\n")
+		end := min(len(lines), start+listH)
+		for _, l := range lines[start:end] {
+			b.WriteString(l + "\n")
 		}
 	}
 
-	// status bar
-	countStr := ""
-	if len(m.notes) > 0 {
-		countStr = styleHelp.Render(fmt.Sprintf(" %d notes", len(m.notes)))
+	b.WriteString("\n" + m.renderHelpBar(m.width))
+	return b.String()
+}
+
+// ── Two-pane (wide terminals) ─────────────────────────────────────────────────
+
+func (m Model) renderTwoPane() string {
+	leftW := m.leftWidth()
+	rightW := m.pvpWidth()
+	paneH := m.height - 4 // header(1) + tab(1) + divider(1) + helpbar(1)
+
+	var b strings.Builder
+	b.WriteString(m.renderAppHeader(m.width) + "\n")
+	b.WriteString(m.renderTabBar(m.width) + "\n")
+	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
+
+	// search row replaces one line of the pane
+	if m.searching {
+		b.WriteString("  " + m.searchInput.View() + "\n")
+		paneH--
 	}
-	var bar2 string
-	if m.err != nil {
-		bar2 = styleErr.Render("✗ " + m.err.Error())
-	} else if m.status != "" {
-		bar2 = styleOK.Render("✓ " + m.status)
+
+	// ── left: note list ──
+	var leftLines []string
+	if len(m.notes) == 0 {
+		leftLines = []string{styleHelp.Render(" " + emptyHint())}
 	} else {
-		bar2 = styleHelp.Render("enter:open  n:new  e:edit  d:delete  o:editor  s:sync  p:settings  /:search  tab:folder  q:quit")
+		lines, cursorLine := m.buildListLines(leftW, false)
+		start := 0
+		if cursorLine >= paneH {
+			start = cursorLine - paneH + 1
+		}
+		end := min(len(lines), start+paneH)
+		leftLines = lines[start:end]
 	}
-	pad := m.width - lipgloss.Width(bar2) - lipgloss.Width(countStr)
+
+	// ── right: markdown preview ──
+	var rightLines []string
+	if len(m.notes) > 0 {
+		body := m.notes[m.cursor].Body
+		if body == "" && config.Source() != config.SourceApple {
+			body = ""
+		}
+		rendered := renderMarkdown(body, rightW)
+		rightLines = strings.Split(rendered, "\n")
+	}
+
+	// combine side by side
+	div := styleDivider.Render("│")
+	for i := 0; i < paneH; i++ {
+		l := ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		}
+		r := ""
+		if i < len(rightLines) {
+			r = rightLines[i]
+		}
+		lW := lipgloss.Width(l)
+		if lW < leftW {
+			l += strings.Repeat(" ", leftW-lW)
+		}
+		b.WriteString(l + div + r + "\n")
+	}
+
+	b.WriteString(m.renderHelpBar(m.width))
+	return b.String()
+}
+
+// buildListLines pre-renders list rows with optional date group headers and preview lines.
+func (m Model) buildListLines(w int, withPreview bool) ([]string, int) {
+	var lines []string
+	cursorLine := 0
+	lastGroup := ""
+
+	for i := range m.notes {
+		n := &m.notes[i]
+
+		// date group header (only when sorted by date)
+		if m.sortByDate {
+			g := dateGroup(n.ModTime)
+			if g != lastGroup {
+				if len(lines) > 0 {
+					lines = append(lines, "") // blank separator
+				}
+				lines = append(lines, renderGroupHeader(g, w))
+				lastGroup = g
+			}
+		}
+
+		if i == m.cursor {
+			cursorLine = len(lines)
+		}
+		row := formatNoteRow(n, w)
+		if i == m.cursor {
+			row = styleSelected.Width(w).Render(row)
+		}
+		lines = append(lines, row)
+
+		if withPreview && n.Body != "" {
+			preview := firstBodyLine(n.Body)
+			if preview != "" {
+				runes := []rune(preview)
+				avail := w - 16
+				if avail > 10 && len(runes) > avail {
+					preview = string(runes[:avail-1]) + "…"
+				}
+				pLine := strings.Repeat(" ", 16) + preview
+				if i == m.cursor {
+					pLine = styleSelected.Width(w).Render(pLine)
+				} else {
+					pLine = styleMuted.Render(pLine)
+				}
+				lines = append(lines, pLine)
+			}
+		}
+	}
+	return lines, cursorLine
+}
+
+func (m Model) renderAppHeader(w int) string {
+	left := styleHeader.Render("notectl")
+	right := styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006"))
+	pad := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + right
+}
+
+func (m Model) renderTabBar(w int) string {
+	tabs := append([]string{"All"}, m.folders...)
+	var parts []string
+	for i, t := range tabs {
+		label := t
+		folderKey := t
+		if i == 0 {
+			folderKey = "" // "All" → total count
+		}
+		if c := m.folderCounts[folderKey]; c > 0 {
+			label = fmt.Sprintf("%s %d", t, c)
+		}
+		if i == m.activeTab {
+			parts = append(parts, styleTabActive.Render(label))
+		} else {
+			parts = append(parts, styleTabInact.Render(label))
+		}
+	}
+	bar := strings.Join(parts, "  ")
+	if m.syncing {
+		bar += "  " + styleSyncing.Render("⟳ syncing…")
+	}
+	_ = w
+	return bar
+}
+
+func (m Model) renderHelpBar(w int) string {
+	right := ""
+	if len(m.notes) > 0 {
+		sortIcon := "↓date"
+		if !m.sortByDate {
+			sortIcon = "↓A-Z"
+		}
+		right = styleHelp.Render(fmt.Sprintf("%d/%d  %s", m.cursor+1, len(m.notes), sortIcon))
+	}
+	var helpBar string
+	if m.err != nil {
+		helpBar = styleErr.Render("✗ " + m.err.Error())
+	} else if m.status != "" {
+		if m.confirmID != "" {
+			helpBar = styleSyncing.Render("⚠ " + m.status)
+		} else {
+			helpBar = styleOK.Render("✓ " + m.status)
+		}
+	} else {
+		helpBar = styleHelp.Render("enter:open  n:new  e:edit  d:delete  y:copy  S:sort  o:editor  s:sync  p:settings  /:search  tab:folder  q:quit")
+	}
+	pad := w - lipgloss.Width(helpBar) - lipgloss.Width(right)
 	if pad < 0 {
 		pad = 0
 	}
-	b.WriteString("\n" + bar2 + strings.Repeat(" ", pad) + countStr)
-	return b.String()
+	return helpBar + strings.Repeat(" ", pad) + right
 }
 
 func (m Model) renderDetail() string {
@@ -625,25 +1101,58 @@ func (m Model) renderDetail() string {
 	}
 	var b strings.Builder
 	b.WriteString(styleBold.Render(m.detail.Title) + "\n")
+	meta := ""
 	if m.detail.Folder != "" {
-		b.WriteString(styleFolder.Render("📁 "+m.detail.Folder) + "  ")
+		meta += styleFolder.Render(m.detail.Folder) + "  "
 	}
-	if len(m.detail.Tags) > 0 {
-		for _, t := range m.detail.Tags {
-			b.WriteString(styleTag.Render("#"+t) + " ")
-		}
-		b.WriteString("\n")
+	for _, t := range m.detail.Tags {
+		meta += styleTag.Render("#"+t) + " "
+	}
+	if meta != "" {
+		b.WriteString(meta + "\n")
 	}
 	b.WriteString(styleMuted.Render(m.detail.ModTime.Format("Mon, 02 Jan 2006 15:04")) + "\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
+	m.vp.Width = m.width - 2
 	m.vp.Height = m.bodyHeight()
-	b.WriteString(m.vp.View())
+	b.WriteString(renderScrollbar(m.vp))
 	pct := ""
 	if m.vp.TotalLineCount() > m.vp.Height {
 		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
 	}
-	b.WriteString("\n" + styleHelp.Render("esc:back  e:edit  d:delete  o:editor  ↑↓/jk:scroll  q:quit") + styleMuted.Render(pct))
+	helpStr := "esc:back  e:edit  d:delete  o:notes  j/k:scroll  space:toggle checkbox  q:quit"
+	b.WriteString("\n" + styleHelp.Render(helpStr) + styleMuted.Render(pct))
 	return b.String()
+}
+
+func renderScrollbar(vp viewport.Model) string {
+	content := vp.View()
+	lines := strings.Split(content, "\n")
+	h := vp.Height
+	if h <= 0 {
+		h = len(lines)
+	}
+	total := vp.TotalLineCount()
+	if total <= h {
+		var sb strings.Builder
+		for _, l := range lines {
+			sb.WriteString(l + "\n")
+		}
+		return strings.TrimRight(sb.String(), "\n")
+	}
+	thumbH := max(1, h*h/total)
+	thumbTop := int(vp.ScrollPercent() * float64(h-thumbH))
+	track := styleDivider.Render("│")
+	thumb := styleMuted.Render("█")
+	var sb strings.Builder
+	for i, l := range lines {
+		glyph := track
+		if i >= thumbTop && i < thumbTop+thumbH {
+			glyph = thumb
+		}
+		sb.WriteString(l + " " + glyph + "\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func (m Model) renderNew() string {
@@ -682,21 +1191,16 @@ func (m Model) renderSettings() string {
 	b.WriteString(styleHeader.Render("notectl") + "  " + styleMuted.Render("Settings") + "\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", w)) + "\n\n")
 
-	// ── vault path ──
 	b.WriteString(styleLabel.Render("Vault:") + "\n")
 	b.WriteString("  " + m.vaultInput.View() + "\n")
-	// show resolved path when it contains ~
 	if strings.HasPrefix(m.vaultInput.Value(), "~") {
 		resolved := config.VaultPath()
-		exists := ""
 		if _, err := filepath.Abs(resolved); err == nil {
-			exists = styleMuted.Render("  → " + resolved)
+			b.WriteString(styleMuted.Render("  → " + resolved) + "\n")
 		}
-		b.WriteString(exists + "\n")
 	}
 	b.WriteString("\n")
 
-	// ── source type ──
 	b.WriteString(styleLabel.Render("Source:") + "\n  ")
 	for i, s := range sourceTypes {
 		if i == m.sourceIdx {
@@ -721,6 +1225,89 @@ func (m Model) renderSettings() string {
 	return b.String()
 }
 
+// ── Markdown renderer ─────────────────────────────────────────────────────────
+
+func renderMarkdown(body string, width int) string {
+	if body == "" {
+		return styleMuted.Render("(empty)")
+	}
+	var sb strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		sb.WriteString(renderMDLine(line, width) + "\n")
+	}
+	return sb.String()
+}
+
+func renderMDLine(line string, width int) string {
+	t := strings.TrimRight(line, " \t")
+
+	switch {
+	case strings.HasPrefix(t, "### "):
+		return styleMDH3.Render(strings.TrimPrefix(t, "### "))
+	case strings.HasPrefix(t, "## "):
+		return styleMDH2.Render(strings.TrimPrefix(t, "## "))
+	case strings.HasPrefix(t, "# "):
+		return styleMDH1.Render(strings.TrimPrefix(t, "# "))
+	case strings.HasPrefix(t, "> "):
+		return styleMDQuote.Render("│ " + renderInline(strings.TrimPrefix(t, "> ")))
+	case t == ">":
+		return styleMDQuote.Render("│")
+	case t == "---" || t == "***" || t == "___":
+		return styleDivider.Render(strings.Repeat("─", width))
+	case strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* "):
+		return "  • " + renderInline(t[2:])
+	case strings.HasPrefix(t, "• "):
+		return "  " + renderInline(t)
+	case strings.HasPrefix(t, "☑ "):
+		return styleStrike.Render(t)
+	case strings.HasPrefix(t, "☐ "):
+		return styleMuted.Render(t)
+	case strings.HasPrefix(t, "```"):
+		return styleMDCode.Render(t)
+	default:
+		return renderInline(line)
+	}
+}
+
+func renderInline(s string) string {
+	var out strings.Builder
+	runes := []rune(s)
+	n := len(runes)
+	i := 0
+	for i < n {
+		// **bold**
+		if i+1 < n && runes[i] == '*' && runes[i+1] == '*' {
+			rest := string(runes[i+2:])
+			if end := strings.Index(rest, "**"); end >= 0 {
+				out.WriteString(styleMDBold.Render(rest[:end]))
+				i += 2 + end + 2
+				continue
+			}
+		}
+		// *italic*
+		if runes[i] == '*' && (i == 0 || runes[i-1] != '*') && (i+1 >= n || runes[i+1] != '*') {
+			rest := string(runes[i+1:])
+			if end := strings.Index(rest, "*"); end >= 0 && !strings.HasPrefix(rest[end:], "**") {
+				out.WriteString(styleMuted.Render(rest[:end]))
+				i += 1 + end + 1
+				continue
+			}
+		}
+		// `code`
+		if runes[i] == '`' {
+			rest := string(runes[i+1:])
+			if end := strings.Index(rest, "`"); end >= 0 {
+				out.WriteString(styleMDCode.Render(rest[:end]))
+				i += 1 + end + 1
+				continue
+			}
+		}
+		out.WriteRune(runes[i])
+		i++
+	}
+	return out.String()
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 func loadNotesCmd(query, folder string) tea.Cmd {
@@ -736,7 +1323,8 @@ func loadNotesCmd(query, folder string) tea.Cmd {
 			return errMsg{err}
 		}
 		folders, _ := s.ListFolders(ctx)
-		return notesLoadedMsg{notes: ns, folders: folders}
+		counts, _ := s.CountByFolder(ctx)
+		return notesLoadedMsg{notes: ns, folders: folders, folderCounts: counts}
 	}
 }
 
@@ -792,7 +1380,6 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 			return deletedMsg{err}
 		}
 		if config.Source() == config.SourceApple {
-			// relPath holds the title for Apple Notes
 			_ = notes.DeleteApple(relPath)
 		} else if relPath != "" {
 			_ = notes.Delete(config.VaultPath(), relPath)
@@ -801,13 +1388,18 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 	}
 }
 
-func openNoteCmd(relPath string) tea.Cmd {
+// openExternalCmd opens a note in its native app.
+// For Apple Notes it uses AppleScript; for file-based vaults it uses `open`.
+func openExternalCmd(title, relPath string) tea.Cmd {
 	return func() tea.Msg {
+		if config.Source() == config.SourceApple {
+			_ = notes.OpenApple(title)
+			return nil
+		}
 		if relPath == "" {
 			return nil
 		}
-		full := config.VaultPath() + "/" + relPath
-		_ = exec.Command("open", full).Start()
+		_ = exec.Command("open", config.VaultPath()+"/"+relPath).Start()
 		return nil
 	}
 }
@@ -832,14 +1424,9 @@ func writeNoteCmd(title, body, tagsStr, folder string) tea.Cmd {
 				return writeDoneMsg{err: err}
 			}
 			n = &models.Note{
-				ID:      "apple-" + title,
-				Title:   title,
-				Body:    body,
-				Tags:    tags,
-				Folder:  folder,
-				Source:  "apple",
-				ModTime: timeNow(),
-				Created: timeNow(),
+				ID: "apple-" + title, Title: title, Body: body,
+				Tags: tags, Folder: folder, Source: "apple",
+				ModTime: time.Now(), Created: time.Now(),
 			}
 		} else {
 			n, err = notes.Write(config.VaultPath(), title, body, tags, folder)
@@ -859,7 +1446,14 @@ func writeNoteCmd(title, body, tagsStr, folder string) tea.Cmd {
 func loadAppleBodyCmd(title string) tea.Cmd {
 	return func() tea.Msg {
 		body, err := notes.ReadApple(title)
-		return appleBodyMsg{body: body, err: err}
+		return appleBodyMsg{title: title, body: body, err: err}
+	}
+}
+
+func loadAppleBodyForEditCmd(title string) tea.Cmd {
+	return func() tea.Msg {
+		body, err := notes.ReadApple(title)
+		return appleBodyMsg{title: title, body: body, err: err, goEdit: true}
 	}
 }
 
@@ -911,28 +1505,140 @@ func (m Model) bodyHeight() int {
 }
 
 func formatNoteRow(n *models.Note, width int) string {
-	date := smartDate(n.ModTime)
+	dateStr := smartDate(n.ModTime)
+	dateStyled := coloredDate(dateStr, n.ModTime)
 	title := n.Title
-	folder := ""
+	meta := ""
 	if n.Folder != "" {
-		folder = styleFolder.Render(" " + n.Folder)
+		meta += styleFolder.Render(" " + n.Folder)
 	}
-	tags := ""
 	if len(n.Tags) > 0 {
-		tags = styleTag.Render(" #" + n.Tags[0])
+		meta += styleTag.Render(" #" + n.Tags[0])
 	}
-
-	// fixed columns: date(14) + title(rest)
-	meta := folder + tags
 	metaW := lipgloss.Width(meta)
 	titleW := width - 16 - metaW
-	if titleW < 10 {
-		titleW = 10
+	if titleW < 6 {
+		titleW = 6
 	}
-	if len(title) > titleW {
-		title = title[:titleW-1] + "…"
+	runes := []rune(title)
+	if len(runes) > titleW {
+		title = string(runes[:titleW-1]) + "…"
 	}
-	return fmt.Sprintf("%-14s  %-*s%s", date, titleW, title, meta)
+	// pad date to 14 chars visually before styling
+	padded := dateStr + strings.Repeat(" ", 14-len([]rune(dateStr)))
+	_ = padded
+	return fmt.Sprintf("%s  %-*s%s", dateStyled, titleW, title, meta)
+}
+
+func coloredDate(s string, t time.Time) string {
+	now := time.Now()
+	// pad to fixed 14-char visual width before coloring
+	runes := []rune(s)
+	padded := string(runes) + strings.Repeat(" ", 14-len(runes))
+	switch {
+	case sameDay(t, now):
+		return styleDateToday.Render(padded)
+	case t.After(now.AddDate(0, 0, -7)):
+		return styleDateWeek.Render(padded)
+	case t.After(now.AddDate(0, -1, 0)):
+		return styleDateMonth.Render(padded)
+	default:
+		return styleDateOld.Render(padded)
+	}
+}
+
+func firstBodyLine(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		// skip markdown headings and empty lines
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		// strip list markers and quotes for preview
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.TrimPrefix(line, "* ")
+		line = strings.TrimPrefix(line, "> ")
+		return line
+	}
+	return ""
+}
+
+func emptyHint() string {
+	switch config.Source() {
+	case config.SourceApple:
+		return "No notes — press s to sync from Apple Notes"
+	case config.SourceObsidian, config.SourceMarkdown:
+		return "No notes — press p to set vault path, then s to sync"
+	default:
+		return "No notes — press p to configure a source, then s to sync"
+	}
+}
+
+func dateGroup(t time.Time) string {
+	now := time.Now()
+	switch {
+	case sameDay(t, now):
+		return "Today"
+	case sameDay(t, now.AddDate(0, 0, -1)):
+		return "Yesterday"
+	case t.After(now.AddDate(0, 0, -7)):
+		return t.Format("Monday")
+	case t.After(now.AddDate(0, -1, 0)):
+		return "This month"
+	case t.Year() == now.Year():
+		return t.Format("January")
+	default:
+		return t.Format("January 2006")
+	}
+}
+
+func renderGroupHeader(group string, width int) string {
+	label := " " + group + " "
+	dashes := width - len([]rune(label)) - 3
+	if dashes < 2 {
+		dashes = 2
+	}
+	return styleMuted.Render("──" + label + strings.Repeat("─", dashes))
+}
+
+// applySortOrder sorts m.notes and restores cursor by ID.
+func (m Model) applySortOrder() Model {
+	if m.sortByDate {
+		return m // SQL already returns date-sorted
+	}
+	var curID string
+	if m.cursor < len(m.notes) {
+		curID = m.notes[m.cursor].ID
+	}
+	sort.Slice(m.notes, func(i, j int) bool {
+		return strings.ToLower(m.notes[i].Title) < strings.ToLower(m.notes[j].Title)
+	})
+	for i, n := range m.notes {
+		if n.ID == curID {
+			m.cursor = i
+			break
+		}
+	}
+	return m
+}
+
+func copyToClipboardCmd(text string) tea.Cmd {
+	return func() tea.Msg {
+		cmd := exec.Command("pbcopy")
+		cmd.Stdin = strings.NewReader(text)
+		if err := cmd.Run(); err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
+}
+
+func runeLimit(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n-1]) + "…"
 }
 
 func smartDate(t time.Time) string {
@@ -954,8 +1660,6 @@ func sameDay(a, b time.Time) bool {
 	by, bm, bd := b.Date()
 	return ay == by && am == bm && ad == bd
 }
-
-func timeNow() time.Time { return time.Now() }
 
 func max(a, b int) int {
 	if a > b {

@@ -131,6 +131,28 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *Store) CountByFolder(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT folder, COUNT(*) FROM notes GROUP BY folder`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	total := 0
+	for rows.Next() {
+		var folder string
+		var c int
+		if err := rows.Scan(&folder, &c); err != nil {
+			return nil, err
+		}
+		counts[folder] = c
+		total += c
+	}
+	counts[""] = total
+	return counts, rows.Err()
+}
+
 func (s *Store) ListFolders(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT folder FROM notes WHERE folder != '' ORDER BY folder`)

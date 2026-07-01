@@ -64,11 +64,12 @@ end tell
 
 // WriteApple creates or updates a note in Apple Notes.
 func WriteApple(title, body, folder string) error {
+	// Convert text (with ☐/☑ bullets) to Apple Notes HTML.
+	htmlBody := TextToHTML(body)
 	target := "default account"
 	if folder != "" {
 		target = fmt.Sprintf(`folder "%s"`, escapeAS(folder))
 	}
-	// check if note exists
 	checkScript := fmt.Sprintf(`
 tell application "Notes"
 	set results to every note whose name is "%s"
@@ -91,14 +92,14 @@ tell application "Notes"
 		set body of item 1 of results to "%s"
 	end if
 end tell
-`, escapeAS(title), escapeAS(body))
+`, escapeAS(title), escapeAS(htmlBody))
 		_, err = runAppleScript(updateScript)
 	} else {
 		createScript := fmt.Sprintf(`
 tell application "Notes"
 	make new note at %s with properties {name:"%s", body:"%s"}
 end tell
-`, target, escapeAS(title), escapeAS(body))
+`, target, escapeAS(title), escapeAS(htmlBody))
 		_, err = runAppleScript(createScript)
 	}
 	return err
@@ -128,6 +129,113 @@ end tell
 	return folders, nil
 }
 
+// OpenApple brings the note up in the Apple Notes app.
+func OpenApple(title string) error {
+	script := fmt.Sprintf(`
+tell application "Notes"
+	activate
+	set found to every note whose name is %q
+	if (count of found) > 0 then
+		show item 1 of found
+	end if
+end tell
+`, title)
+	_, err := runAppleScript(script)
+	return err
+}
+
+// UpdateBody writes an HTML body back to an existing Apple Notes note.
+func UpdateBody(title, htmlBody string) error {
+	script := fmt.Sprintf(`
+tell application "Notes"
+	set found to every note whose name is "%s"
+	if (count of found) > 0 then
+		set body of item 1 of found to "%s"
+	end if
+end tell
+`, escapeAS(title), escapeAS(htmlBody))
+	_, err := runAppleScript(script)
+	return err
+}
+
+// TextToHTML converts a plain-text note body (with ☐/☑ checkbox markers,
+// Markdown headings, and bullet lists) into Apple Notes–compatible HTML.
+func TextToHTML(body string) string {
+	lines := strings.Split(body, "\n")
+	var sb strings.Builder
+	inChecklist := false
+	inList := false
+
+	closeChecklist := func() {
+		if inChecklist {
+			sb.WriteString("</ul>")
+			inChecklist = false
+		}
+	}
+	closeList := func() {
+		if inList {
+			sb.WriteString("</ul>")
+			inList = false
+		}
+	}
+
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "☐ ") || strings.HasPrefix(line, "☑ "):
+			// native Apple Notes checklist item
+			closeList()
+			if !inChecklist {
+				sb.WriteString(`<ul class="Apple-checked-list">`)
+				inChecklist = true
+			}
+			checked := strings.HasPrefix(line, "☑ ")
+			text := line[len("☐ "):]
+			cls := "Apple-unchecked"
+			if checked {
+				cls = "Apple-checked"
+			}
+			sb.WriteString(fmt.Sprintf(
+				`<li><span class="Apple-checked-list-item %s">%s</span></li>`,
+				cls, htmlEscape(text),
+			))
+		case strings.HasPrefix(line, "• "):
+			// regular bullet — unchecked
+			closeChecklist()
+			if !inList {
+				sb.WriteString("<ul>")
+				inList = true
+			}
+			sb.WriteString("<li>" + htmlEscape(line[len("• "):]) + "</li>")
+		case strings.HasPrefix(line, "# "):
+			closeChecklist(); closeList()
+			sb.WriteString("<h1>" + htmlEscape(line[2:]) + "</h1>")
+		case strings.HasPrefix(line, "## "):
+			closeChecklist(); closeList()
+			sb.WriteString("<h2>" + htmlEscape(line[3:]) + "</h2>")
+		case strings.HasPrefix(line, "### "):
+			closeChecklist(); closeList()
+			sb.WriteString("<h3>" + htmlEscape(line[4:]) + "</h3>")
+		case line == "":
+			closeChecklist(); closeList()
+			sb.WriteString("<div><br></div>")
+		default:
+			closeChecklist(); closeList()
+			sb.WriteString("<div>" + htmlEscape(line) + "</div>")
+		}
+	}
+	closeChecklist()
+	closeList()
+	return sb.String()
+}
+
+func htmlEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	return s
+}
+
 // DeleteApple moves a note to Trash in Apple Notes.
 func DeleteApple(title string) error {
 	script := fmt.Sprintf(`
@@ -141,20 +249,143 @@ end tell`, title)
 	return err
 }
 
-// StripHTML removes HTML tags and decodes common entities for plain-text display.
+// StripHTML converts Apple Notes HTML to structured plain text.
+// It preserves lists (• bullets), checklists (☐/☑), headings (# ##), and line breaks.
 func StripHTML(s string) string {
 	var out strings.Builder
+	var tagBuf strings.Builder
 	inTag := false
+	lastNL := true        // treat start as newline so first line doesn't get a blank line
+	inChecklist := false  // inside <ul class="Apple-checked-list">
+	pendingBullet := ""   // bullet to emit before next text character
+
+	emitNL := func() {
+		if !lastNL {
+			out.WriteByte('\n')
+			lastNL = true
+		}
+	}
+	emitStr := func(t string) {
+		out.WriteString(t)
+		if len(t) > 0 {
+			lastNL = t[len(t)-1] == '\n'
+		}
+	}
+	emitRune := func(r rune) {
+		if pendingBullet != "" {
+			out.WriteString(pendingBullet)
+			pendingBullet = ""
+			lastNL = false
+		}
+		out.WriteRune(r)
+		lastNL = r == '\n'
+	}
+
+	handleTag := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || strings.HasPrefix(raw, "!") {
+			return
+		}
+		closing := strings.HasPrefix(raw, "/")
+		if closing {
+			raw = raw[1:]
+		}
+		// split into tag name + attributes
+		sp := strings.IndexAny(raw, " \t\r\n")
+		name := strings.ToLower(raw)
+		attrs := ""
+		if sp >= 0 {
+			name = strings.ToLower(raw[:sp])
+			attrs = strings.ToLower(raw[sp:])
+		}
+
+		switch name {
+		case "br":
+			emitNL()
+
+		case "p", "div", "blockquote", "pre", "table", "tr":
+			if closing {
+				emitNL()
+			} else if name == "blockquote" {
+				emitNL()
+				emitStr("> ")
+			}
+
+		case "h1", "h2", "h3", "h4", "h5", "h6":
+			if closing {
+				emitNL()
+			} else {
+				emitNL()
+				switch name {
+				case "h1":
+					emitStr("# ")
+				case "h2":
+					emitStr("## ")
+				case "h3":
+					emitStr("### ")
+				default:
+					emitStr("#### ")
+				}
+			}
+
+		case "ul", "ol":
+			if closing {
+				inChecklist = false
+				pendingBullet = ""
+				emitNL()
+			} else {
+				if strings.Contains(attrs, "apple-checked-list") ||
+					strings.Contains(attrs, "task-list") ||
+					strings.Contains(attrs, "checklist") {
+					inChecklist = true
+				}
+			}
+
+		case "li":
+			if !closing {
+				emitNL()
+				if inChecklist {
+					pendingBullet = "☐ " // may be updated by inner span
+				} else {
+					pendingBullet = "• "
+				}
+			} else {
+				pendingBullet = "" // discard if no text was in this li
+				emitNL()
+			}
+
+		case "span":
+			// Apple Notes checklist: <span class="Apple-checked-list-item Apple-checked">
+			if !closing && inChecklist && pendingBullet != "" {
+				if strings.Contains(attrs, "apple-unchecked") {
+					pendingBullet = "☐ "
+				} else if strings.Contains(attrs, "apple-checked") {
+					pendingBullet = "☑ "
+				}
+			}
+
+		case "td", "th":
+			if closing {
+				emitStr("\t")
+			}
+		}
+	}
+
 	for _, r := range s {
 		switch {
 		case r == '<':
 			inTag = true
-		case r == '>':
+			tagBuf.Reset()
+		case r == '>' && inTag:
 			inTag = false
-		case !inTag:
-			out.WriteRune(r)
+			handleTag(tagBuf.String())
+		case inTag:
+			tagBuf.WriteRune(r)
+		default:
+			emitRune(r)
 		}
 	}
+
 	result := out.String()
 	result = strings.ReplaceAll(result, "&nbsp;", " ")
 	result = strings.ReplaceAll(result, "&amp;", "&")
@@ -162,7 +393,7 @@ func StripHTML(s string) string {
 	result = strings.ReplaceAll(result, "&gt;", ">")
 	result = strings.ReplaceAll(result, "&quot;", `"`)
 	result = strings.ReplaceAll(result, "&#39;", "'")
-	// collapse runs of blank lines to max 2
+	result = strings.ReplaceAll(result, "&apos;", "'")
 	for strings.Contains(result, "\n\n\n") {
 		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
 	}
