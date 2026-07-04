@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/notes"
@@ -21,6 +22,8 @@ func Serve() error {
 	s.AddTool(toolWrite(), handleWrite)
 	s.AddTool(toolSearch(), handleSearch)
 	s.AddTool(toolSync(), handleSync)
+	s.AddTool(toolGetDailyNote(), handleGetDailyNote)
+	s.AddTool(toolAppendDailyNote(), handleAppendDailyNote)
 	return server.ServeStdio(s)
 }
 
@@ -213,6 +216,126 @@ func handleSearch(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		b.WriteString("\n")
 	}
 	return mcp.NewToolResultText(b.String()), nil
+}
+
+func toolGetDailyNote() mcp.Tool {
+	return mcp.NewTool("get_daily_note",
+		mcp.WithDescription("Get today's daily note. Creates one from the standard template if it doesn't exist yet. Returns full Markdown content."),
+		mcp.WithString("folder", mcp.Description("Subfolder for daily notes (default: Daily)")),
+	)
+}
+
+func toolAppendDailyNote() mcp.Tool {
+	return mcp.NewTool("append_daily_note",
+		mcp.WithDescription("Append content to today's daily note. Use this to log insights, tasks, or observations without overwriting existing content."),
+		mcp.WithString("content", mcp.Required(), mcp.Description("Markdown content to append")),
+		mcp.WithString("section", mcp.Description("Section heading to append under (e.g. 'Log', 'Tasks'). Appends at end if not found.")),
+		mcp.WithString("folder", mcp.Description("Subfolder for daily notes (default: Daily)")),
+	)
+}
+
+func handleGetDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	folder := req.GetString("folder", "Daily")
+	today := time.Now().Format("2006-01-02")
+	vaultPath := config.VaultPath()
+
+	n, _ := notes.Read(vaultPath, today)
+	if n != nil {
+		return mcp.NewToolResultText(fmt.Sprintf("# %s\n\n%s", n.Title, n.Body)), nil
+	}
+
+	// create from template
+	body := dailyNoteTemplate()
+	n, err := notes.Write(vaultPath, today, body, []string{"daily"}, folder)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("create daily note: %v", err)), nil
+	}
+	if s, serr := store.New(config.DBPath()); serr == nil {
+		defer s.Close()
+		_ = s.Upsert(context.Background(), n)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("# %s\n\n%s", n.Title, n.Body)), nil
+}
+
+func handleAppendDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	content := req.GetString("content", "")
+	section := req.GetString("section", "")
+	folder := req.GetString("folder", "Daily")
+	if content == "" {
+		return mcp.NewToolResultError("content is required"), nil
+	}
+
+	today := time.Now().Format("2006-01-02")
+	vaultPath := config.VaultPath()
+
+	n, _ := notes.Read(vaultPath, today)
+	if n == nil {
+		// create first
+		body := dailyNoteTemplate()
+		var err error
+		n, err = notes.Write(vaultPath, today, body, []string{"daily"}, folder)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("create daily note: %v", err)), nil
+		}
+	}
+
+	newBody := appendToSection(n.Body, section, content)
+	var tags []string
+	if len(n.Tags) > 0 {
+		tags = n.Tags
+	} else {
+		tags = []string{"daily"}
+	}
+
+	n, err := notes.Write(vaultPath, today, newBody, tags, folder)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if s, serr := store.New(config.DBPath()); serr == nil {
+		defer s.Close()
+		_ = s.Upsert(context.Background(), n)
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Appended to %s", today)), nil
+}
+
+func appendToSection(body, section, content string) string {
+	if section == "" {
+		return body + "\n" + content
+	}
+	// find the section heading and insert after it
+	heading := "## " + section
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == heading {
+			// find next non-empty line or end of section
+			insertAt := i + 1
+			for insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) == "" {
+				insertAt++
+			}
+			result := make([]string, 0, len(lines)+2)
+			result = append(result, lines[:insertAt]...)
+			result = append(result, content)
+			result = append(result, lines[insertAt:]...)
+			return strings.Join(result, "\n")
+		}
+	}
+	// section not found — append at end
+	return body + "\n## " + section + "\n" + content
+}
+
+func dailyNoteTemplate() string {
+	return `## Focus
+
+
+## Tasks
+- [ ]
+
+## Notes
+
+
+## Log
+
+`
 }
 
 func handleSync(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {

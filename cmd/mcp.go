@@ -7,7 +7,7 @@ import (
 
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
-	Short: "Start MCP server (stdio) — exposes list, read, write, search, sync as AI tools",
+	Short: "Start MCP server (stdio) — exposes notes + daily note tools to AI",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return mcpserver.Serve()
 	},
