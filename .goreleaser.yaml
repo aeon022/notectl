@@ -43,6 +43,7 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     homepage: https://github.com/aeon022/notectl
+    license: MIT
     description: "Notes from your terminal - write and read Obsidian vault notes"
     install: |
       bin.install "notectl"
