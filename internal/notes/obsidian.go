@@ -25,7 +25,8 @@ func List(vaultPath string) ([]models.Note, error) {
 		// skip hidden dirs (.obsidian, .git, etc.)
 		rel, _ := filepath.Rel(vaultPath, path)
 		for _, part := range strings.Split(filepath.Dir(rel), string(os.PathSeparator)) {
-			if strings.HasPrefix(part, ".") {
+			// "." is the vault root, not a hidden directory
+			if part != "." && strings.HasPrefix(part, ".") {
 				return nil
 			}
 		}
