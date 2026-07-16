@@ -13,6 +13,7 @@ import (
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -34,8 +35,8 @@ const (
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 var (
-	colorBlue   = lipgloss.AdaptiveColor{Light: "25",  Dark: "33"}
-	colorGreen  = lipgloss.AdaptiveColor{Light: "28",  Dark: "42"}
+	colorBlue   = lipgloss.AdaptiveColor{Light: "25", Dark: "33"}
+	colorGreen  = lipgloss.AdaptiveColor{Light: "28", Dark: "42"}
 	colorRed    = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
 	colorMuted  = lipgloss.AdaptiveColor{Light: "243", Dark: "246"}
 	colorSubtle = lipgloss.AdaptiveColor{Light: "250", Dark: "239"}
@@ -50,9 +51,9 @@ var (
 	styleBold     = lipgloss.NewStyle().Bold(true)
 	styleSelected = lipgloss.NewStyle().
 			Background(lipgloss.AdaptiveColor{Light: "189", Dark: "17"}).
-			Foreground(lipgloss.AdaptiveColor{Light: "16",  Dark: "255"}).
+			Foreground(lipgloss.AdaptiveColor{Light: "16", Dark: "255"}).
 			Bold(true)
-	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33",  Dark: "75"})
+	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33", Dark: "75"})
 	styleFolder  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "136", Dark: "178"})
 	styleLabel   = lipgloss.NewStyle().Foreground(colorBlue).Width(9)
 	styleSyncing = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"})
@@ -88,10 +89,10 @@ var sourceTypes = []struct {
 	label string
 	note  string
 }{
-	{config.SourceApple,    "Apple Notes", "syncs from Apple Notes via AppleScript"},
-	{config.SourceObsidian, "Obsidian",    "reads .md files with YAML frontmatter"},
-	{config.SourceMarkdown, "Markdown",    "any folder of plain .md files"},
-	{config.SourceJoplin,   "Joplin",      "coming soon — Joplin exported notes"},
+	{config.SourceApple, "Apple Notes", "syncs from Apple Notes via AppleScript"},
+	{config.SourceObsidian, "Obsidian", "reads .md files with YAML frontmatter"},
+	{config.SourceMarkdown, "Markdown", "any folder of plain .md files"},
+	{config.SourceJoplin, "Joplin", "coming soon — Joplin exported notes"},
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -127,13 +128,13 @@ type Model struct {
 	height int
 
 	// list
-	notes       []models.Note
-	cursor      int
-	searchQ     string
-	searching   bool
-	searchInput textinput.Model
-	folders     []string
-	activeTab   int // 0 = All, 1+ = folder
+	notes        []models.Note
+	cursor       int
+	searchQ      string
+	searching    bool
+	searchInput  textinput.Model
+	folders      []string
+	activeTab    int // 0 = All, 1+ = folder
 	folderCounts map[string]int
 
 	// detail / preview
@@ -163,9 +164,14 @@ type Model struct {
 	statusTime time.Time
 	err        error
 	syncing    bool
+	sp         spinner.Model
 }
 
 func New() Model {
+	sp := spinner.New()
+	sp.Spinner = spinner.MiniDot
+	sp.Style = styleSyncing
+
 	si := textinput.New()
 	si.Placeholder = "search notes…"
 	si.CharLimit = 200
@@ -198,6 +204,7 @@ func New() Model {
 	}
 
 	return Model{
+		sp:          sp,
 		searchInput: si,
 		titleInput:  ti,
 		tagsInput:   tags,
@@ -397,6 +404,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case spinner.TickMsg:
+		if m.syncing {
+			var cmd tea.Cmd
+			m.sp, cmd = m.sp.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		m.err = nil
 		if time.Since(m.statusTime) > 4*time.Second {
@@ -570,7 +585,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.syncing {
 			m.syncing = true
 			m.setStatus("Syncing…")
-			return m, doSyncCmd()
+			return m, tea.Batch(doSyncCmd(), m.sp.Tick)
 		}
 	case "/":
 		m.searching = true
@@ -1061,7 +1076,7 @@ func (m Model) renderTabBar(w int) string {
 	}
 	bar := strings.Join(parts, "  ")
 	if m.syncing {
-		bar += "  " + styleSyncing.Render("⟳ syncing…")
+		bar += "  " + m.sp.View() + styleSyncing.Render(" syncing…")
 	}
 	_ = w
 	return bar
@@ -1196,7 +1211,7 @@ func (m Model) renderSettings() string {
 	if strings.HasPrefix(m.vaultInput.Value(), "~") {
 		resolved := config.VaultPath()
 		if _, err := filepath.Abs(resolved); err == nil {
-			b.WriteString(styleMuted.Render("  → " + resolved) + "\n")
+			b.WriteString(styleMuted.Render("  → "+resolved) + "\n")
 		}
 	}
 	b.WriteString("\n")
