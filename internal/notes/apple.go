@@ -159,7 +159,8 @@ end tell
 }
 
 // TextToHTML converts a plain-text note body (with ☐/☑ checkbox markers,
-// Markdown headings, and bullet lists) into Apple Notes–compatible HTML.
+// Markdown headings, bullet lists, and inline styles) into Apple
+// Notes–compatible HTML.
 func TextToHTML(body string) string {
 	lines := strings.Split(body, "\n")
 	var sb strings.Builder
@@ -178,54 +179,115 @@ func TextToHTML(body string) string {
 			inList = false
 		}
 	}
+	checklistItem := func(text string, checked bool) {
+		closeList()
+		if !inChecklist {
+			sb.WriteString(`<ul class="Apple-checked-list">`)
+			inChecklist = true
+		}
+		cls := "Apple-unchecked"
+		if checked {
+			cls = "Apple-checked"
+		}
+		sb.WriteString(fmt.Sprintf(
+			`<li><span class="Apple-checked-list-item %s">%s</span></li>`,
+			cls, mdInlineToHTML(text),
+		))
+	}
+	bulletItem := func(text string) {
+		closeChecklist()
+		if !inList {
+			sb.WriteString("<ul>")
+			inList = true
+		}
+		sb.WriteString("<li>" + mdInlineToHTML(text) + "</li>")
+	}
 
 	for _, line := range lines {
 		switch {
-		case strings.HasPrefix(line, "☐ ") || strings.HasPrefix(line, "☑ "):
-			// native Apple Notes checklist item
-			closeList()
-			if !inChecklist {
-				sb.WriteString(`<ul class="Apple-checked-list">`)
-				inChecklist = true
-			}
-			checked := strings.HasPrefix(line, "☑ ")
-			text := line[len("☐ "):]
-			cls := "Apple-unchecked"
-			if checked {
-				cls = "Apple-checked"
-			}
-			sb.WriteString(fmt.Sprintf(
-				`<li><span class="Apple-checked-list-item %s">%s</span></li>`,
-				cls, htmlEscape(text),
-			))
+		case strings.HasPrefix(line, "☐ "):
+			checklistItem(line[len("☐ "):], false)
+		case strings.HasPrefix(line, "☑ "):
+			checklistItem(line[len("☑ "):], true)
+		case strings.HasPrefix(line, "- [ ] "), strings.HasPrefix(line, "* [ ] "):
+			checklistItem(line[6:], false)
+		case strings.HasPrefix(line, "- [x] "), strings.HasPrefix(line, "- [X] "),
+			strings.HasPrefix(line, "* [x] "), strings.HasPrefix(line, "* [X] "):
+			checklistItem(line[6:], true)
 		case strings.HasPrefix(line, "• "):
-			// regular bullet — unchecked
-			closeChecklist()
-			if !inList {
-				sb.WriteString("<ul>")
-				inList = true
-			}
-			sb.WriteString("<li>" + htmlEscape(line[len("• "):]) + "</li>")
+			bulletItem(line[len("• "):])
+		case strings.HasPrefix(line, "- "), strings.HasPrefix(line, "* "):
+			bulletItem(line[2:])
 		case strings.HasPrefix(line, "# "):
 			closeChecklist(); closeList()
-			sb.WriteString("<h1>" + htmlEscape(line[2:]) + "</h1>")
+			sb.WriteString("<h1>" + mdInlineToHTML(line[2:]) + "</h1>")
 		case strings.HasPrefix(line, "## "):
 			closeChecklist(); closeList()
-			sb.WriteString("<h2>" + htmlEscape(line[3:]) + "</h2>")
+			sb.WriteString("<h2>" + mdInlineToHTML(line[3:]) + "</h2>")
 		case strings.HasPrefix(line, "### "):
 			closeChecklist(); closeList()
-			sb.WriteString("<h3>" + htmlEscape(line[4:]) + "</h3>")
+			sb.WriteString("<h3>" + mdInlineToHTML(line[4:]) + "</h3>")
 		case line == "":
 			closeChecklist(); closeList()
 			sb.WriteString("<div><br></div>")
 		default:
 			closeChecklist(); closeList()
-			sb.WriteString("<div>" + htmlEscape(line) + "</div>")
+			sb.WriteString("<div>" + mdInlineToHTML(line) + "</div>")
 		}
 	}
 	closeChecklist()
 	closeList()
 	return sb.String()
+}
+
+// mdInlineToHTML HTML-escapes a line of text and converts inline Markdown —
+// **bold**, *italic*, ~~strike~~, `code` — into tags Apple Notes understands.
+func mdInlineToHTML(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], "**") {
+			if end := strings.Index(s[i+2:], "**"); end >= 0 {
+				out.WriteString("<b>" + htmlEscape(s[i+2:i+2+end]) + "</b>")
+				i += 2 + end + 2
+				continue
+			}
+		}
+		if strings.HasPrefix(s[i:], "~~") {
+			if end := strings.Index(s[i+2:], "~~"); end >= 0 {
+				out.WriteString("<strike>" + htmlEscape(s[i+2:i+2+end]) + "</strike>")
+				i += 2 + end + 2
+				continue
+			}
+		}
+		if s[i] == '*' {
+			if end := strings.Index(s[i+1:], "*"); end >= 0 && !strings.HasPrefix(s[i+1+end:], "**") {
+				out.WriteString("<i>" + htmlEscape(s[i+1:i+1+end]) + "</i>")
+				i += 1 + end + 1
+				continue
+			}
+		}
+		if s[i] == '`' {
+			if end := strings.Index(s[i+1:], "`"); end >= 0 {
+				out.WriteString("<tt>" + htmlEscape(s[i+1:i+1+end]) + "</tt>")
+				i += 1 + end + 1
+				continue
+			}
+		}
+		switch s[i] {
+		case '&':
+			out.WriteString("&amp;")
+		case '<':
+			out.WriteString("&lt;")
+		case '>':
+			out.WriteString("&gt;")
+		case '"':
+			out.WriteString("&quot;")
+		default:
+			out.WriteByte(s[i])
+		}
+		i++
+	}
+	return out.String()
 }
 
 func htmlEscape(s string) string {
@@ -279,6 +341,16 @@ func StripHTML(s string) string {
 		}
 		out.WriteRune(r)
 		lastNL = r == '\n'
+	}
+	// emitMarker writes an inline Markdown marker (**, *, `), flushing a
+	// pending list bullet first so the marker lands after the bullet.
+	emitMarker := func(mk string) {
+		if pendingBullet != "" {
+			out.WriteString(pendingBullet)
+			pendingBullet = ""
+		}
+		out.WriteString(mk)
+		lastNL = false
 	}
 
 	handleTag := func(raw string) {
@@ -368,6 +440,16 @@ func StripHTML(s string) string {
 			if closing {
 				emitStr("\t")
 			}
+
+		// inline styles → Markdown markers (symmetric, so open/close identical)
+		case "b", "strong":
+			emitMarker("**")
+		case "i", "em":
+			emitMarker("*")
+		case "s", "strike", "del":
+			emitMarker("~~")
+		case "tt", "code":
+			emitMarker("`")
 		}
 	}
 

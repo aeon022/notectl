@@ -144,11 +144,12 @@ type Model struct {
 	pvp              viewport.Model // two-pane preview (right side)
 
 	// new note
-	titleInput textinput.Model
-	tagsInput  textinput.Model
-	bodyArea   textarea.Model
-	newFocus   int
-	editNote   *models.Note
+	titleInput    textinput.Model
+	tagsInput     textinput.Model
+	bodyArea      textarea.Model
+	newFocus      int
+	editNote      *models.Note
+	editorYOffset int // mirrors bodyArea's internal viewport scroll (for mouse clicks)
 
 	// settings
 	vaultInput textinput.Model
@@ -247,6 +248,15 @@ func (m Model) leftWidth() int {
 }
 func (m Model) pvpWidth() int { return m.width - m.leftWidth() - 1 }
 
+// editorBodyWidth is the textarea width in the new/edit view — the left pane
+// when the live preview is shown, full width otherwise.
+func (m Model) editorBodyWidth() int {
+	if m.isTwoPane() {
+		return m.leftWidth() - 4
+	}
+	return m.width - 4
+}
+
 // ── Update ────────────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -257,8 +267,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.vp = viewport.New(msg.Width, m.bodyHeight())
 		m.pvp = viewport.New(m.pvpWidth(), m.height-3)
-		m.bodyArea.SetWidth(msg.Width - 4)
-		m.bodyArea.SetHeight(m.height - 10)
+		m.bodyArea.SetWidth(m.editorBodyWidth())
+		m.bodyArea.SetHeight(m.height - 11)
 
 	case notesLoadedMsg:
 		// Remember which note was selected so we can restore it after the list changes
@@ -386,6 +396,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.detailLineCursor--
 					m = m.syncDetailViewport()
 				}
+			} else if m.view == viewNew && m.newFocus == 2 {
+				return m.scrollEditor(-3), nil
 			}
 		case tea.MouseButtonWheelDown:
 			if m.view == viewList {
@@ -401,6 +413,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.detailLineCursor++
 					m = m.syncDetailViewport()
 				}
+			} else if m.view == viewNew && m.newFocus == 2 {
+				return m.scrollEditor(3), nil
+			}
+		case tea.MouseButtonLeft:
+			if m.view == viewNew && msg.Action == tea.MouseActionPress {
+				return m.handleEditorClick(msg.X, msg.Y), nil
 			}
 		}
 
@@ -790,6 +808,7 @@ func (m Model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tagsInput, cmd = m.tagsInput.Update(msg)
 	case 2:
 		m.bodyArea, cmd = m.bodyArea.Update(msg)
+		m.syncEditorScroll()
 	}
 	return m, cmd
 }
@@ -1175,9 +1194,14 @@ func (m Model) renderNew() string {
 	if m.editNote != nil {
 		title = "Edit: " + m.editNote.Title
 	}
+	leftW := m.width
+	if m.isTwoPane() {
+		leftW = m.leftWidth()
+	}
+
 	var b strings.Builder
 	b.WriteString(styleHeader.Render(title) + "\n")
-	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n\n")
+	b.WriteString(styleDivider.Render(strings.Repeat("─", leftW)) + "\n\n")
 
 	focus := func(i int) string {
 		if m.newFocus == i {
@@ -1189,14 +1213,44 @@ func (m Model) renderNew() string {
 	b.WriteString(focus(0) + " " + styleLabel.Render("Title:") + "  " + m.titleInput.View() + "\n")
 	b.WriteString(focus(1) + " " + styleLabel.Render("Tags:") + "   " + m.tagsInput.View() + "\n\n")
 	b.WriteString(focus(2) + " " + styleLabel.Render("Body:") + "\n")
-	b.WriteString(m.bodyArea.View() + "\n\n")
+	b.WriteString(m.bodyArea.View() + "\n")
+	b.WriteString(styleMuted.Render("  # heading  - list  - [ ] checklist  **bold**  *italic*  ~~strike~~  `code`") + "\n\n")
 
 	if m.err != nil {
-		b.WriteString(styleErr.Render("✗ "+m.err.Error()) + "\n")
+		b.WriteString(styleErr.Render("✗ " + m.err.Error()))
 	} else {
 		b.WriteString(styleHelp.Render("tab:next  ctrl+s:save  esc:cancel"))
 	}
-	return b.String()
+	if !m.isTwoPane() {
+		return b.String()
+	}
+
+	// ── live preview pane (wide terminals) ──
+	rightW := m.pvpWidth()
+	rightLines := []string{styleMuted.Render(" Preview"), ""}
+	rightLines = append(rightLines, strings.Split(renderMarkdown(m.bodyArea.Value(), rightW-1), "\n")...)
+	leftLines := strings.Split(b.String(), "\n")
+	div := styleDivider.Render("│")
+	rows := max(len(leftLines), len(rightLines))
+	if rows > m.height {
+		rows = m.height
+	}
+	var out strings.Builder
+	for i := 0; i < rows; i++ {
+		l := ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		}
+		r := ""
+		if i < len(rightLines) {
+			r = " " + rightLines[i]
+		}
+		if lW := lipgloss.Width(l); lW < leftW {
+			l += strings.Repeat(" ", leftW-lW)
+		}
+		out.WriteString(l + div + r + "\n")
+	}
+	return strings.TrimRight(out.String(), "\n")
 }
 
 func (m Model) renderSettings() string {
@@ -1269,6 +1323,11 @@ func renderMDLine(line string, width int) string {
 		return styleMDQuote.Render("│")
 	case t == "---" || t == "***" || t == "___":
 		return styleDivider.Render(strings.Repeat("─", width))
+	case strings.HasPrefix(t, "- [ ] ") || strings.HasPrefix(t, "* [ ] "):
+		return styleMuted.Render("☐ " + t[6:])
+	case strings.HasPrefix(t, "- [x] ") || strings.HasPrefix(t, "- [X] ") ||
+		strings.HasPrefix(t, "* [x] ") || strings.HasPrefix(t, "* [X] "):
+		return styleStrike.Render("☑ " + t[6:])
 	case strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* "):
 		return "  • " + renderInline(t[2:])
 	case strings.HasPrefix(t, "• "):
@@ -1286,38 +1345,40 @@ func renderMDLine(line string, width int) string {
 
 func renderInline(s string) string {
 	var out strings.Builder
-	runes := []rune(s)
-	n := len(runes)
-	i := 0
-	for i < n {
+	for i := 0; i < len(s); {
 		// **bold**
-		if i+1 < n && runes[i] == '*' && runes[i+1] == '*' {
-			rest := string(runes[i+2:])
-			if end := strings.Index(rest, "**"); end >= 0 {
-				out.WriteString(styleMDBold.Render(rest[:end]))
+		if strings.HasPrefix(s[i:], "**") {
+			if end := strings.Index(s[i+2:], "**"); end >= 0 {
+				out.WriteString(styleMDBold.Render(s[i+2 : i+2+end]))
+				i += 2 + end + 2
+				continue
+			}
+		}
+		// ~~strikethrough~~
+		if strings.HasPrefix(s[i:], "~~") {
+			if end := strings.Index(s[i+2:], "~~"); end >= 0 {
+				out.WriteString(styleStrike.Render(s[i+2 : i+2+end]))
 				i += 2 + end + 2
 				continue
 			}
 		}
 		// *italic*
-		if runes[i] == '*' && (i == 0 || runes[i-1] != '*') && (i+1 >= n || runes[i+1] != '*') {
-			rest := string(runes[i+1:])
-			if end := strings.Index(rest, "*"); end >= 0 && !strings.HasPrefix(rest[end:], "**") {
-				out.WriteString(styleMuted.Render(rest[:end]))
+		if s[i] == '*' && (i == 0 || s[i-1] != '*') && (i+1 >= len(s) || s[i+1] != '*') {
+			if end := strings.Index(s[i+1:], "*"); end >= 0 && !strings.HasPrefix(s[i+1+end:], "**") {
+				out.WriteString(styleMuted.Render(s[i+1 : i+1+end]))
 				i += 1 + end + 1
 				continue
 			}
 		}
 		// `code`
-		if runes[i] == '`' {
-			rest := string(runes[i+1:])
-			if end := strings.Index(rest, "`"); end >= 0 {
-				out.WriteString(styleMDCode.Render(rest[:end]))
+		if s[i] == '`' {
+			if end := strings.Index(s[i+1:], "`"); end >= 0 {
+				out.WriteString(styleMDCode.Render(s[i+1 : i+1+end]))
 				i += 1 + end + 1
 				continue
 			}
 		}
-		out.WriteRune(runes[i])
+		out.WriteByte(s[i])
 		i++
 	}
 	return out.String()
@@ -1475,6 +1536,8 @@ func loadAppleBodyForEditCmd(title string) tea.Cmd {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func (m *Model) resetNew(title string) {
+	m.bodyArea.SetWidth(m.editorBodyWidth()) // paneRatio may have changed since last resize
+	m.editorYOffset = 0
 	m.titleInput.SetValue(title)
 	m.tagsInput.SetValue("")
 	m.bodyArea.SetValue("")
@@ -1573,6 +1636,9 @@ func firstBodyLine(body string) string {
 		line = strings.TrimPrefix(line, "- ")
 		line = strings.TrimPrefix(line, "* ")
 		line = strings.TrimPrefix(line, "> ")
+		line = strings.TrimPrefix(line, "[ ] ")
+		line = strings.TrimPrefix(line, "[x] ")
+		line = strings.TrimPrefix(line, "[X] ")
 		return line
 	}
 	return ""

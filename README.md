@@ -207,6 +207,30 @@ notectl mcp
 | `o` | Open in `$EDITOR` |
 | `j` / `k` | Scroll body |
 
+### Editor syntax
+
+The new/edit view is a plain-text editor; on wide terminals (≥100 columns) a live
+preview pane renders the markdown as you type. When syncing to Apple Notes the
+syntax maps to native formatting:
+
+| You type | TUI preview | Apple Notes |
+|----------|-------------|-------------|
+| `# ` / `## ` / `### ` | styled heading | Title / Heading / Subheading |
+| `- item` / `* item` / `• item` | `•` bullet | bullet list |
+| `- [ ] item` / `☐ item` | `☐` | checklist (unchecked) |
+| `- [x] item` / `☑ item` | `☑` strikethrough | checklist (checked) |
+| `**bold**` | bold | bold |
+| `*italic*` | italic | italic |
+| `~~strike~~` | strikethrough | strikethrough |
+| `` `code` `` | highlighted | monospace |
+
+Bold/italic/strikethrough/monospace round-trip: Apple Notes formatting comes
+back as `**`/`*`/`~~`/`` ` `` markers when reading or editing the note in
+notectl.
+
+The editor supports the mouse: click a field or a position in the body to
+move the cursor there; the wheel scrolls the body.
+
 ---
 
 ## Note Format
