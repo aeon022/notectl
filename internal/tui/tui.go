@@ -1161,12 +1161,20 @@ func (m Model) renderTwoPane() string {
 		paneH--
 	}
 
+	// Reserve a 1-column margin on each side of the divider (left pane's
+	// own left edge, both sides of the "│", and the right pane's right
+	// edge implicitly via its narrower content width) so list rows and
+	// preview text don't render flush against the pane borders.
+	const pad = 1
+	listContentW := max(1, leftW-pad*2)
+	rightContentW := max(1, rightW-pad)
+
 	// ── left: note list ──
 	var leftLines []string
 	if len(m.notes) == 0 {
 		leftLines = []string{styleHelp.Render(" " + emptyHint())}
 	} else {
-		lines, cursorLine := m.buildListLines(leftW, false)
+		lines, cursorLine := m.buildListLines(listContentW, false)
 		start := 0
 		if cursorLine >= paneH {
 			start = cursorLine - paneH + 1
@@ -1182,7 +1190,7 @@ func (m Model) renderTwoPane() string {
 		if body == "" && config.Source() != config.SourceApple {
 			body = ""
 		}
-		rendered := renderMarkdown(body, rightW)
+		rendered := renderMarkdown(body, rightContentW)
 		rightLines = strings.Split(rendered, "\n")
 	}
 
@@ -1198,10 +1206,10 @@ func (m Model) renderTwoPane() string {
 			r = rightLines[i]
 		}
 		lW := lipgloss.Width(l)
-		if lW < leftW {
-			l += strings.Repeat(" ", leftW-lW)
+		if lW < listContentW {
+			l += strings.Repeat(" ", listContentW-lW)
 		}
-		b.WriteString(l + div + r + "\n")
+		b.WriteString(" " + l + " " + div + " " + r + "\n")
 	}
 
 	b.WriteString(m.renderHelpBar(m.width))
