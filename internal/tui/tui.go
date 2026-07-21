@@ -1386,6 +1386,13 @@ func renderScrollbar(vp viewport.Model, leftPad string) string {
 		if i >= thumbTop && i < thumbTop+thumbH {
 			glyph = thumb
 		}
+		// Pad to vp.Width first — lines are only as long as their own
+		// wrapped content (viewport.View() doesn't right-pad short lines),
+		// so without this the glyph lands at a different column on every
+		// line instead of forming a straight vertical bar.
+		if w := lipgloss.Width(l); w < vp.Width {
+			l += strings.Repeat(" ", vp.Width-w)
+		}
 		sb.WriteString(leftPad + l + " " + glyph + "\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/spf13/viper"
 )
 
@@ -149,6 +150,35 @@ func TestPreprocessAndRenderMarkdownTables(t *testing.T) {
 			if len([]rune(l)) > 55 {
 				t.Errorf("preprocessed table line exceeds bounds: %q", l)
 			}
+		}
+	}
+}
+
+func TestRenderScrollbarAlignsGlyphColumn(t *testing.T) {
+	vp := viewport.New(20, 5)
+	// Content with very different line lengths, and more lines than the
+	// viewport height so the scrollbar thumb/track actually renders.
+	vp.SetContent("a\nbb\nccccccccccccccccc\nd\nee\nfff\ng")
+
+	out := renderScrollbar(vp, "")
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected rendered lines, got none")
+	}
+
+	glyphCol := -1
+	for i, l := range lines {
+		// The glyph is the last rune of each rendered line (track "│" or
+		// thumb "█", both single-width). Its byte-rune column should be
+		// identical across every line regardless of that line's own text
+		// length — a mismatch means the glyph isn't forming a straight bar.
+		col := len([]rune(l)) - 1
+		if glyphCol == -1 {
+			glyphCol = col
+			continue
+		}
+		if col != glyphCol {
+			t.Errorf("line %d: glyph at column %d, want %d (same as other lines) — scrollbar not vertically aligned: %q", i, col, glyphCol, l)
 		}
 	}
 }
