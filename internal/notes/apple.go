@@ -20,6 +20,7 @@ tell application "Notes"
 	set output to ""
 	set noteList to every note %s
 	repeat with n in noteList
+		set nID to id of n
 		set nName to name of n
 		set nMod to modification date of n
 		set nFolder to ""
@@ -33,6 +34,7 @@ tell application "Notes"
 		set mn to text -2 thru -1 of ("0" & (minutes of nMod as string))
 		set sc to text -2 thru -1 of ("0" & (seconds of nMod as string))
 		set nModStr to yr & "-" & mo & "-" & dy & "T" & hr & ":" & mn & ":" & sc
+		set output to output & "ID:" & nID & linefeed
 		set output to output & "TITLE:" & nName & linefeed
 		set output to output & "FOLDER:" & nFolder & linefeed
 		set output to output & "MODTIME:" & nModStr & linefeed
@@ -48,61 +50,64 @@ end tell
 	return parseAppleNotes(out), nil
 }
 
-// ReadApple fetches the full body of a note by title.
-func ReadApple(title string) (string, error) {
+// rawAppleID strips the "apple-" prefix models.Note.ID carries, recovering
+// the raw AppleScript coredata id (e.g. "x-coredata://.../ICNote/p182") used
+// to address the note directly. Looking notes up by this stable id — instead
+// of by their mutable display name — is what makes renaming an existing note
+// (rather than silently creating a duplicate under the new name) possible.
+func rawAppleID(id string) string {
+	return strings.TrimPrefix(id, "apple-")
+}
+
+// ReadApple fetches the full HTML body of a note by its stable id.
+func ReadApple(id string) (string, error) {
 	script := fmt.Sprintf(`
 tell application "Notes"
-	set results to every note whose name is "%s"
-	if (count of results) > 0 then
-		return body of item 1 of results
-	end if
-	return ""
+	try
+		return body of note id "%s"
+	on error
+		return ""
+	end try
 end tell
-`, escapeAS(title))
+`, escapeAS(rawAppleID(id)))
 	return runAppleScript(script)
 }
 
-// WriteApple creates or updates a note in Apple Notes.
-func WriteApple(title, body, folder string) error {
-	// Convert text (with ☐/☑ bullets) to Apple Notes HTML.
-	htmlBody := TextToHTML(body)
+// WriteApple creates or updates a note in Apple Notes. If id is non-empty,
+// the existing note is updated in place by id; only its body is touched —
+// Notes derives the displayed title from the body's first line, and directly
+// setting the `name` property was found (via live testing) to desync from
+// the rendered title rather than rename it, so it's deliberately left alone
+// on update. If id is empty, a new note is created and its freshly assigned
+// id is returned so the caller can persist it for future updates.
+func WriteApple(id, title, htmlBody, folder string) (string, error) {
+	if id != "" {
+		updateScript := fmt.Sprintf(`
+tell application "Notes"
+	try
+		set body of note id "%s" to "%s"
+	end try
+end tell
+`, escapeAS(rawAppleID(id)), escapeAS(htmlBody))
+		_, err := runAppleScript(updateScript)
+		return id, err
+	}
+
 	target := "default account"
 	if folder != "" {
 		target = fmt.Sprintf(`folder "%s"`, escapeAS(folder))
 	}
-	checkScript := fmt.Sprintf(`
+	createScript := fmt.Sprintf(`
 tell application "Notes"
-	set results to every note whose name is "%s"
-	if (count of results) > 0 then
-		return "exists"
-	end if
-	return "new"
-end tell
-`, escapeAS(title))
-	state, err := runAppleScript(checkScript)
-	if err != nil {
-		return err
-	}
-
-	if strings.TrimSpace(state) == "exists" {
-		updateScript := fmt.Sprintf(`
-tell application "Notes"
-	set results to every note whose name is "%s"
-	if (count of results) > 0 then
-		set body of item 1 of results to "%s"
-	end if
-end tell
-`, escapeAS(title), escapeAS(htmlBody))
-		_, err = runAppleScript(updateScript)
-	} else {
-		createScript := fmt.Sprintf(`
-tell application "Notes"
-	make new note at %s with properties {name:"%s", body:"%s"}
+	set newNote to make new note at %s with properties {name:"%s", body:"%s"}
+	return id of newNote
 end tell
 `, target, escapeAS(title), escapeAS(htmlBody))
-		_, err = runAppleScript(createScript)
+	out, err := runAppleScript(createScript)
+	if err != nil {
+		return "", err
 	}
-	return err
+	return "apple-" + strings.TrimSpace(out), nil
 }
 
 // ListAppleFolders returns all folder names from Apple Notes.
@@ -130,30 +135,28 @@ end tell
 }
 
 // OpenApple brings the note up in the Apple Notes app.
-func OpenApple(title string) error {
+func OpenApple(id string) error {
 	script := fmt.Sprintf(`
 tell application "Notes"
 	activate
-	set found to every note whose name is %q
-	if (count of found) > 0 then
-		show item 1 of found
-	end if
+	try
+		show note id "%s"
+	end try
 end tell
-`, title)
+`, escapeAS(rawAppleID(id)))
 	_, err := runAppleScript(script)
 	return err
 }
 
-// UpdateBody writes an HTML body back to an existing Apple Notes note.
-func UpdateBody(title, htmlBody string) error {
+// UpdateBody writes an HTML body back to an existing Apple Notes note by id.
+func UpdateBody(id, htmlBody string) error {
 	script := fmt.Sprintf(`
 tell application "Notes"
-	set found to every note whose name is "%s"
-	if (count of found) > 0 then
-		set body of item 1 of found to "%s"
-	end if
+	try
+		set body of note id "%s" to "%s"
+	end try
 end tell
-`, escapeAS(title), escapeAS(htmlBody))
+`, escapeAS(rawAppleID(id)), escapeAS(htmlBody))
 	_, err := runAppleScript(script)
 	return err
 }
@@ -163,6 +166,9 @@ end tell
 // Notes–compatible HTML.
 func TextToHTML(body string) string {
 	lines := strings.Split(body, "\n")
+	if looksLikeMarkdownTable(lines) {
+		return tableMarkdownToHTML(lines)
+	}
 	var sb strings.Builder
 	inChecklist := false
 	inList := false
@@ -299,14 +305,13 @@ func htmlEscape(s string) string {
 }
 
 // DeleteApple moves a note to Trash in Apple Notes.
-func DeleteApple(title string) error {
+func DeleteApple(id string) error {
 	script := fmt.Sprintf(`
 tell application "Notes"
-	set found to every note whose name is %q
-	if (count of found) > 0 then
-		delete item 1 of found
-	end if
-end tell`, title)
+	try
+		delete note id "%s"
+	end try
+end tell`, escapeAS(rawAppleID(id)))
 	_, err := runAppleScript(script)
 	return err
 }
@@ -506,8 +511,11 @@ func parseAppleNotes(out string) []models.Note {
 			continue
 		}
 		n := models.Note{Source: "apple"}
+		var appleID string
 		for _, line := range strings.Split(block, "\n") {
 			switch {
+			case strings.HasPrefix(line, "ID:"):
+				appleID = strings.TrimPrefix(line, "ID:")
 			case strings.HasPrefix(line, "TITLE:"):
 				n.Title = strings.TrimPrefix(line, "TITLE:")
 			case strings.HasPrefix(line, "FOLDER:"):
@@ -519,10 +527,14 @@ func parseAppleNotes(out string) []models.Note {
 				n.Created = t
 			}
 		}
-		if n.Title == "" {
+		if appleID == "" {
 			continue
 		}
-		n.ID = "apple-" + slugify(n.Title)
+		n.Title = strings.TrimSpace(n.Title)
+		if n.Title == "" {
+			n.Title = "Untitled"
+		}
+		n.ID = "apple-" + appleID
 		notes = append(notes, n)
 	}
 	return notes

@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	runewidth "github.com/mattn/go-runewidth"
 )
 
 // ── Views ─────────────────────────────────────────────────────────────────────
@@ -113,8 +114,8 @@ type writeDoneMsg struct {
 type deletedMsg struct{ err error }
 type savedSettingsMsg struct{ err error }
 type appleBodyMsg struct {
-	title  string
-	body   string
+	id     string
+	body   string // raw Apple Notes HTML
 	err    error
 	goEdit bool // if true, open edit view after body is loaded
 }
@@ -140,6 +141,7 @@ type Model struct {
 	// detail / preview
 	detail           *models.Note
 	detailLineCursor int // current line in detail body (for j/k + checkbox toggle)
+	detailBlocks     []notes.Block // Apple HTML blocks backing m.detail.Body, for non-destructive saves
 	vp               viewport.Model
 	pvp              viewport.Model // two-pane preview (right side)
 
@@ -149,6 +151,7 @@ type Model struct {
 	bodyArea      textarea.Model
 	newFocus      int
 	editNote      *models.Note
+	editBlocks    []notes.Block // Apple HTML blocks backing the note being edited (nil for new notes)
 	editorYOffset int // mirrors bodyArea's internal viewport scroll (for mouse clicks)
 
 	// settings
@@ -342,23 +345,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case appleBodyMsg:
 		if msg.err == nil {
-			body := notes.StripHTML(msg.body)
+			blocks := notes.ParseBlocks(msg.body)
+			body := notes.BlocksToPlain(blocks)
 			// cache in notes slice
 			var cachedNote *models.Note
 			for i := range m.notes {
-				if m.notes[i].Title == msg.title {
+				if m.notes[i].ID == msg.id {
 					m.notes[i].Body = body
 					cachedNote = &m.notes[i]
 					break
 				}
 			}
 			// update detail view if open
-			if m.detail != nil && m.detail.Title == msg.title {
+			if m.detail != nil && m.detail.ID == msg.id {
 				m.detail.Body = body
+				m.detailBlocks = blocks
 				m.vp.SetContent(renderDetailBody(body, m.detailLineCursor, m.width-2))
 			}
 			// update preview pane if still on same note
-			if len(m.notes) > 0 && m.notes[m.cursor].Title == msg.title {
+			if len(m.notes) > 0 && m.notes[m.cursor].ID == msg.id {
 				m.pvp.SetContent(renderMarkdown(body, m.pvpWidth()))
 				m.pvp.GotoTop()
 			}
@@ -367,10 +372,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = ""
 				n := *cachedNote
 				m.editNote = &n
-				m.resetNew(n.Title)
-				m.titleInput.SetValue(n.Title)
+				m.editBlocks = blocks
+				title, rest := splitTitleBlock(blocks)
+				m.resetNew(title)
+				m.titleInput.SetValue(title)
 				m.tagsInput.SetValue(strings.Join(n.Tags, ", "))
-				m.bodyArea.SetValue(body)
+				m.bodyArea.SetValue(rest)
 				m.view = viewNew
 				return m, nil
 			}
@@ -518,12 +525,15 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.notes) > 0 {
 			n := m.notes[m.cursor]
 			m.detail = &n
+			m.detailBlocks = nil
 			m.detailLineCursor = 0
 			m.vp.GotoTop()
 			m.view = viewDetail
-			if config.Source() == config.SourceApple && n.Body == "" {
+			if config.Source() == config.SourceApple {
+				// Always re-fetch: detailBlocks must reflect this exact note,
+				// and a plain-text-only cache hit wouldn't carry blocks along.
 				m.vp.SetContent(styleMuted.Render("Loading…"))
-				return m, loadAppleBodyCmd(n.Title)
+				return m, loadAppleBodyCmd(n.ID)
 			}
 			m.vp.SetContent(renderDetailBody(n.Body, 0, m.width-2))
 			return m, nil
@@ -538,7 +548,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if config.Source() == config.SourceApple && n.Body == "" {
 				// load body first, then open edit
 				m.setStatus("Loading…")
-				return m, loadAppleBodyForEditCmd(n.Title)
+				return m, loadAppleBodyForEditCmd(n.ID)
 			}
 			m.editNote = &n
 			m.resetNew(n.Title)
@@ -550,7 +560,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		if len(m.notes) > 0 {
 			n := m.notes[m.cursor]
-			return m, openExternalCmd(n.Title, n.Path)
+			return m, openExternalCmd(n.ID, n.Title, n.Path)
 		}
 	case "d":
 		if len(m.notes) > 0 {
@@ -646,7 +656,7 @@ func (m Model) refreshPreview() (Model, tea.Cmd) {
 	if config.Source() == config.SourceApple {
 		m.pvp.SetContent(styleMuted.Render("Loading…"))
 		m.pvp.GotoTop()
-		return m, loadAppleBodyCmd(n.Title)
+		return m, loadAppleBodyCmd(n.ID)
 	}
 	m.pvp.SetContent("")
 	return m, nil
@@ -673,14 +683,14 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "o":
 		if m.detail != nil {
-			return m, openExternalCmd(m.detail.Title, m.detail.Path)
+			return m, openExternalCmd(m.detail.ID, m.detail.Title, m.detail.Path)
 		}
 
 	case "d":
 		if m.detail != nil {
 			ref := m.detail.Path
 			if config.Source() == config.SourceApple {
-				ref = m.detail.Title
+				ref = m.detail.ID
 			}
 			id, path, title := m.detail.ID, ref, m.detail.Title
 			for i := range m.notes {
@@ -745,7 +755,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					m = m.syncDetailViewport()
 					if config.Source() == config.SourceApple {
-						return m, saveAppleBodyCmd(m.detail.Title, newBody)
+						return m, saveAppleBodyCmd(m.detail.ID, newBody, m.detailBlocks)
 					}
 				}
 			}
@@ -776,11 +786,19 @@ func (m Model) syncDetailViewport() Model {
 func (m Model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s":
+		var id string
+		var editBlocks []notes.Block
+		if m.editNote != nil {
+			id = m.editNote.ID
+			editBlocks = m.editBlocks
+		}
 		return m, writeNoteCmd(
+			id,
 			m.titleInput.Value(),
 			m.bodyArea.Value(),
 			m.tagsInput.Value(),
 			m.activeFolder(),
+			editBlocks,
 		)
 	case "esc":
 		m.view = viewList
@@ -875,11 +893,11 @@ func toggleCheckboxLine(line string) string {
 }
 
 // saveAppleBodyCmd converts the text body (with ☐/☑) back to HTML and writes
-// it to the Apple Notes note with the given title.
-func saveAppleBodyCmd(title, textBody string) tea.Cmd {
+// it to the Apple Notes note with the given id, using block reconciliation to preserve formatting.
+func saveAppleBodyCmd(id, textBody string, detailBlocks []notes.Block) tea.Cmd {
 	return func() tea.Msg {
-		html := notes.TextToHTML(textBody)
-		if err := notes.UpdateBody(title, html); err != nil {
+		html := notes.ReconcileBlocks(detailBlocks, textBody)
+		if err := notes.UpdateBody(id, html); err != nil {
 			return errMsg{err}
 		}
 		return nil
@@ -1047,10 +1065,9 @@ func (m Model) buildListLines(w int, withPreview bool) ([]string, int) {
 		if withPreview && n.Body != "" {
 			preview := firstBodyLine(n.Body)
 			if preview != "" {
-				runes := []rune(preview)
 				avail := w - 16
-				if avail > 10 && len(runes) > avail {
-					preview = string(runes[:avail-1]) + "…"
+				if avail > 10 {
+					preview = runewidth.Truncate(preview, avail, "…")
 				}
 				pLine := strings.Repeat(" ", 16) + preview
 				if i == m.cursor {
@@ -1466,10 +1483,10 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 
 // openExternalCmd opens a note in its native app.
 // For Apple Notes it uses AppleScript; for file-based vaults it uses `open`.
-func openExternalCmd(title, relPath string) tea.Cmd {
+func openExternalCmd(id, title, relPath string) tea.Cmd {
 	return func() tea.Msg {
 		if config.Source() == config.SourceApple {
-			_ = notes.OpenApple(title)
+			_ = notes.OpenApple(id)
 			return nil
 		}
 		if relPath == "" {
@@ -1480,7 +1497,7 @@ func openExternalCmd(title, relPath string) tea.Cmd {
 	}
 }
 
-func writeNoteCmd(title, body, tagsStr, folder string) tea.Cmd {
+func writeNoteCmd(id, title, body, tagsStr, folder string, editBlocks []notes.Block) tea.Cmd {
 	return func() tea.Msg {
 		if title == "" {
 			return writeDoneMsg{err: fmt.Errorf("title required")}
@@ -1496,11 +1513,18 @@ func writeNoteCmd(title, body, tagsStr, folder string) tea.Cmd {
 		var err error
 
 		if config.Source() == config.SourceApple {
-			if err = notes.WriteApple(title, body, folder); err != nil {
+			fullBody := title
+			if body != "" {
+				fullBody = title + "\n\n" + body
+			}
+			htmlBody := notes.ReconcileBlocks(editBlocks, fullBody)
+			var newID string
+			newID, err = notes.WriteApple(id, title, htmlBody, folder)
+			if err != nil {
 				return writeDoneMsg{err: err}
 			}
 			n = &models.Note{
-				ID: "apple-" + title, Title: title, Body: body,
+				ID: newID, Title: title, Body: body,
 				Tags: tags, Folder: folder, Source: "apple",
 				ModTime: time.Now(), Created: time.Now(),
 			}
@@ -1519,21 +1543,32 @@ func writeNoteCmd(title, body, tagsStr, folder string) tea.Cmd {
 	}
 }
 
-func loadAppleBodyCmd(title string) tea.Cmd {
+func loadAppleBodyCmd(id string) tea.Cmd {
 	return func() tea.Msg {
-		body, err := notes.ReadApple(title)
-		return appleBodyMsg{title: title, body: body, err: err}
+		body, err := notes.ReadApple(id)
+		return appleBodyMsg{id: id, body: body, err: err}
 	}
 }
 
-func loadAppleBodyForEditCmd(title string) tea.Cmd {
+func loadAppleBodyForEditCmd(id string) tea.Cmd {
 	return func() tea.Msg {
-		body, err := notes.ReadApple(title)
-		return appleBodyMsg{title: title, body: body, err: err, goEdit: true}
+		body, err := notes.ReadApple(id)
+		return appleBodyMsg{id: id, body: body, err: err, goEdit: true}
 	}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// splitTitleBlock treats an Apple note's first block as its title (Notes
+// derives the displayed title from the body's first line, so the editor
+// shows it as its own field rather than duplicating it atop the body text)
+// and everything after it as the editable body.
+func splitTitleBlock(blocks []notes.Block) (title, rest string) {
+	if len(blocks) == 0 {
+		return "", ""
+	}
+	return blocks[0].Plain, notes.BlocksToPlain(blocks[1:])
+}
 
 func (m *Model) resetNew(title string) {
 	m.bodyArea.SetWidth(m.editorBodyWidth()) // paneRatio may have changed since last resize
@@ -1586,6 +1621,10 @@ func formatNoteRow(n *models.Note, width int) string {
 	dateStr := smartDate(n.ModTime)
 	dateStyled := coloredDate(dateStr, n.ModTime)
 	title := n.Title
+	if idx := strings.Index(title, "\n"); idx >= 0 {
+		title = title[:idx]
+	}
+	title = strings.TrimSpace(title)
 	meta := ""
 	if n.Folder != "" {
 		meta += styleFolder.Render(" " + n.Folder)
@@ -1598,14 +1637,15 @@ func formatNoteRow(n *models.Note, width int) string {
 	if titleW < 6 {
 		titleW = 6
 	}
-	runes := []rune(title)
-	if len(runes) > titleW {
-		title = string(runes[:titleW-1]) + "…"
+	title = runewidth.Truncate(title, titleW, "…")
+	titleVisualW := runewidth.StringWidth(title)
+	if titleVisualW < titleW {
+		title += strings.Repeat(" ", titleW-titleVisualW)
 	}
 	// pad date to 14 chars visually before styling
 	padded := dateStr + strings.Repeat(" ", 14-len([]rune(dateStr)))
 	_ = padded
-	return fmt.Sprintf("%s  %-*s%s", dateStyled, titleW, title, meta)
+	return fmt.Sprintf("%s  %s%s", dateStyled, title, meta)
 }
 
 func coloredDate(s string, t time.Time) string {
