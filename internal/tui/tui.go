@@ -363,7 +363,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.detail != nil && m.detail.ID == msg.id {
 				m.detail.Body = body
 				m.detailBlocks = blocks
-				content, visualCursor := renderDetailBody(body, m.detailLineCursor, m.width-2)
+				content, visualCursor := renderDetailBody(body, m.detailLineCursor, m.detailBodyWidth())
 				// Adjust offset if cursor went off screen due to length change
 				if visualCursor >= m.detailYOffset+m.vp.Height {
 					m.detailYOffset = visualCursor - m.vp.Height + 1
@@ -545,7 +545,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.vp.SetContent(styleMuted.Render("Loading…"))
 				return m, loadAppleBodyCmd(n.ID)
 			}
-			content, _ := renderDetailBody(n.Body, 0, m.width-2)
+			content, _ := renderDetailBody(n.Body, 0, m.detailBodyWidth())
 			m.vp.SetContent(content)
 			return m, nil
 		}
@@ -728,7 +728,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			lines := strings.Split(m.detail.Body, "\n")
 			if next := nextNonBlankLine(lines, m.detailLineCursor, 1); next != m.detailLineCursor {
 				m.detailLineCursor = next
-				content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2)
+				content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.detailBodyWidth())
 				if visualCursor >= m.detailYOffset+m.vp.Height {
 					m.detailYOffset = visualCursor - m.vp.Height + 1
 				}
@@ -742,7 +742,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			lines := strings.Split(m.detail.Body, "\n")
 			if next := nextNonBlankLine(lines, m.detailLineCursor, -1); next != m.detailLineCursor {
 				m.detailLineCursor = next
-				content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2)
+				content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.detailBodyWidth())
 				if visualCursor < m.detailYOffset {
 					m.detailYOffset = visualCursor
 				}
@@ -798,7 +798,7 @@ func (m Model) syncDetailViewport() Model {
 		m.detailYOffset = 0
 		return m
 	}
-	content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2)
+	content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.detailBodyWidth())
 	
 	if visualCursor < m.detailYOffset {
 		m.detailYOffset = visualCursor
@@ -1106,8 +1106,8 @@ func (m Model) renderList() string {
 
 func (m Model) renderSinglePane() string {
 	var b strings.Builder
-	b.WriteString(m.renderAppHeader(m.width) + "\n")
-	b.WriteString(m.renderTabBar(m.width) + "\n")
+	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
+	b.WriteString(" " + m.renderTabBar(m.width-1) + "\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 
 	overhead := 4 // header + tabbar + divider + helpbar
@@ -1151,8 +1151,8 @@ func (m Model) renderTwoPane() string {
 	paneH := m.height - 4 // header(1) + tab(1) + divider(1) + helpbar(1)
 
 	var b strings.Builder
-	b.WriteString(m.renderAppHeader(m.width) + "\n")
-	b.WriteString(m.renderTabBar(m.width) + "\n")
+	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
+	b.WriteString(" " + m.renderTabBar(m.width-1) + "\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 
 	// search row replaces one line of the pane
@@ -1335,7 +1335,8 @@ func (m Model) renderDetail() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(styleBold.Render(m.detail.Title) + "\n")
+	b.WriteString("\n")
+	b.WriteString(detailLeftPad + styleBold.Render(m.detail.Title) + "\n")
 	meta := ""
 	if m.detail.Folder != "" {
 		meta += styleFolder.Render(m.detail.Folder) + "  "
@@ -1344,23 +1345,23 @@ func (m Model) renderDetail() string {
 		meta += styleTag.Render("#"+t) + " "
 	}
 	if meta != "" {
-		b.WriteString(meta + "\n")
+		b.WriteString(detailLeftPad + meta + "\n")
 	}
-	b.WriteString(styleMuted.Render(m.detail.ModTime.Format("Mon, 02 Jan 2006 15:04")) + "\n")
+	b.WriteString(detailLeftPad + styleMuted.Render(m.detail.ModTime.Format("Mon, 02 Jan 2006 15:04")) + "\n\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
-	m.vp.Width = m.width - 2
+	m.vp.Width = m.detailBodyWidth()
 	m.vp.Height = m.bodyHeight()
-	b.WriteString(renderScrollbar(m.vp))
+	b.WriteString(renderScrollbar(m.vp, detailLeftPad))
 	pct := ""
 	if m.vp.TotalLineCount() > m.vp.Height {
 		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
 	}
 	helpStr := "esc:back  e:edit  d:delete  o:notes  j/k:scroll  space:toggle checkbox  q:quit"
-	b.WriteString("\n\n" + styleHelp.Render(helpStr) + styleMuted.Render(pct))
+	b.WriteString("\n\n" + detailLeftPad + styleHelp.Render(helpStr) + styleMuted.Render(pct))
 	return b.String()
 }
 
-func renderScrollbar(vp viewport.Model) string {
+func renderScrollbar(vp viewport.Model, leftPad string) string {
 	content := vp.View()
 	lines := strings.Split(content, "\n")
 	h := vp.Height
@@ -1371,7 +1372,7 @@ func renderScrollbar(vp viewport.Model) string {
 	if total <= h {
 		var sb strings.Builder
 		for _, l := range lines {
-			sb.WriteString(l + "\n")
+			sb.WriteString(leftPad + l + "\n")
 		}
 		return strings.TrimRight(sb.String(), "\n")
 	}
@@ -1385,7 +1386,7 @@ func renderScrollbar(vp viewport.Model) string {
 		if i >= thumbTop && i < thumbTop+thumbH {
 			glyph = thumb
 		}
-		sb.WriteString(l + " " + glyph + "\n")
+		sb.WriteString(leftPad + l + " " + glyph + "\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -1986,12 +1987,27 @@ func (m *Model) setStatus(s string) {
 }
 
 func (m Model) bodyHeight() int {
-	h := m.height - 8
+	h := m.height - 10
 	if h < 5 {
 		h = 5
 	}
 	return h
 }
+
+// detailBodyWidth is the wrap width for detail-view body content, leaving
+// room for detailLeftPad on the left and the scrollbar glyph on the right
+// (see renderDetail/renderScrollbar) so text doesn't run flush to either.
+func (m Model) detailBodyWidth() int {
+	w := m.width - 4
+	if w < 10 {
+		w = 10
+	}
+	return w
+}
+
+// detailLeftPad is the left margin applied to every line in the detail
+// view (header fields and scrollable body alike).
+const detailLeftPad = "  "
 
 func formatNoteRow(n *models.Note, width int) string {
 	dateStr := smartDate(n.ModTime)
