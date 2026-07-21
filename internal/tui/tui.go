@@ -1379,7 +1379,11 @@ func renderScrollbar(vp viewport.Model, leftPad string) string {
 	thumbH := max(1, h*h/total)
 	thumbTop := int(vp.ScrollPercent() * float64(h-thumbH))
 	track := styleDivider.Render("│")
-	thumb := styleMuted.Render("█")
+	// A heavy line rather than a full block ("█") — same single-column
+	// width as the track, just a bolder stroke, so the thumb reads as a
+	// slim scroll indicator instead of a chunky rectangle bulging out of
+	// an otherwise thin line.
+	thumb := lipgloss.NewStyle().Foreground(colorBlue).Render("┃")
 	var sb strings.Builder
 	for i, l := range lines {
 		glyph := track
