@@ -421,7 +421,20 @@ func StripHTML(s string) string {
 		out.WriteString(t)
 		lastNL = t[len(t)-1] == '\n'
 	}
+	isFormattingWhitespace := func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '\t' || r == ' '
+	}
 	emitRune := func(r rune) {
+		// HTML source formatting between tags (e.g. a literal newline
+		// between "</li>\n<li>" purely for readability of the markup) is
+		// insignificant whitespace, not content — every real HTML renderer
+		// collapses it. Skipping it here when already at a fresh line and
+		// nothing is pending stops it from being written as a second,
+		// spurious newline (observed on a real note: a blank line between
+		// every single checklist item that isn't actually in the note).
+		if isFormattingWhitespace(r) && lastNL && pendingBullet == "" && pendingMarker == "" {
+			return
+		}
 		commitHeadingClose()
 		if pendingBullet != "" {
 			if r == '☐' || r == '☑' || (pendingBullet == "• " && r == '•') {

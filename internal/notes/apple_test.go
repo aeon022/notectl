@@ -110,6 +110,20 @@ func TestAppleChecklistStripHTML(t *testing.T) {
 	}
 }
 
+func TestStripHTMLIgnoresFormattingWhitespaceBetweenTags(t *testing.T) {
+	// Apple Notes' actual HTML (confirmed on a real note) puts a literal
+	// newline between list items purely for markup readability:
+	// "<li>a</li>\n<li>b</li>". That whitespace is not content — every real
+	// HTML renderer collapses it — but StripHTML was writing it out as a
+	// second, spurious blank line between every single list item.
+	html := "<ul>\n<li>Item A</li>\n<li>Item B</li>\n<li>Item C</li>\n</ul>"
+	got := StripHTML(html)
+	want := "• Item A\n• Item B\n• Item C"
+	if got != want {
+		t.Errorf("StripHTML(%q) = %q, want %q", html, got, want)
+	}
+}
+
 func TestStripHTMLEmojiSpaces(t *testing.T) {
 	tests := []struct {
 		in   string
