@@ -1384,20 +1384,32 @@ func renderScrollbar(vp viewport.Model, leftPad string) string {
 	// slim scroll indicator instead of a chunky rectangle bulging out of
 	// an otherwise thin line.
 	thumb := lipgloss.NewStyle().Foreground(colorBlue).Render("┃")
-	var sb strings.Builder
-	for i, l := range lines {
-		glyph := track
+	var glyphs strings.Builder
+	for i := range lines {
+		if i > 0 {
+			glyphs.WriteByte('\n')
+		}
 		if i >= thumbTop && i < thumbTop+thumbH {
-			glyph = thumb
+			glyphs.WriteString(thumb)
+		} else {
+			glyphs.WriteString(track)
 		}
-		// Pad to vp.Width first — lines are only as long as their own
-		// wrapped content (viewport.View() doesn't right-pad short lines),
-		// so without this the glyph lands at a different column on every
-		// line instead of forming a straight vertical bar.
-		if w := lipgloss.Width(l); w < vp.Width {
-			l += strings.Repeat(" ", vp.Width-w)
-		}
-		sb.WriteString(leftPad + l + " " + glyph + "\n")
+	}
+	// Content lines are only as wide as their own wrapped text (viewport
+	// content isn't right-padded), so appending the glyph column after a
+	// manually-padded string was fragile: it needs a width measurement that
+	// exactly matches how each line was wrapped, and at least one real
+	// emoji in practice ("🛏️", bed + variation selector) gets measured
+	// differently by different width functions, throwing just that line's
+	// glyph out of column. JoinHorizontal sidesteps the whole problem: it
+	// pads the left block to a uniform width using its own single,
+	// consistent measurement before attaching the right block, so the
+	// glyph column can't drift regardless of what any individual line
+	// contains.
+	body := lipgloss.JoinHorizontal(lipgloss.Top, content, " "+glyphs.String())
+	var sb strings.Builder
+	for _, l := range strings.Split(body, "\n") {
+		sb.WriteString(leftPad + l + "\n")
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

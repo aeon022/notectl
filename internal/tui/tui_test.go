@@ -182,3 +182,29 @@ func TestRenderScrollbarAlignsGlyphColumn(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderScrollbarAlignsGlyphColumn_VariationSelectorEmoji(t *testing.T) {
+	// Regression test for a real note: "🛏️" (bed + U+FE0F variation
+	// selector) is measured as one column wider by lipgloss.Width than it
+	// actually renders, which — when that measurement was used to pad this
+	// line before appending the scrollbar glyph — threw just this line's
+	// glyph one column out of alignment with every other row (looked like
+	// a notch bulging out of the scrollbar).
+	vp := viewport.New(20, 4)
+	vp.SetContent("plain line one\n🛏️ Schlafen\nplain line three\nplain line four\nplain line five\nplain line six")
+
+	out := renderScrollbar(vp, "")
+	lines := strings.Split(out, "\n")
+
+	glyphCol := -1
+	for i, l := range lines {
+		col := len([]rune(l)) - 1
+		if glyphCol == -1 {
+			glyphCol = col
+			continue
+		}
+		if col != glyphCol {
+			t.Errorf("line %d (%q): glyph at column %d, want %d", i, l, col, glyphCol)
+		}
+	}
+}
