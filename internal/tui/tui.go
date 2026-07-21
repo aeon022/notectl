@@ -19,7 +19,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	runewidth "github.com/mattn/go-runewidth"
+	"github.com/mattn/go-runewidth"
+	"github.com/muesli/reflow/wrap"
 )
 
 // ── Views ─────────────────────────────────────────────────────────────────────
@@ -141,6 +142,7 @@ type Model struct {
 	// detail / preview
 	detail           *models.Note
 	detailLineCursor int // current line in detail body (for j/k + checkbox toggle)
+	detailYOffset    int // current visual Y offset in detail view
 	detailBlocks     []notes.Block // Apple HTML blocks backing m.detail.Body, for non-destructive saves
 	vp               viewport.Model
 	pvp              viewport.Model // two-pane preview (right side)
@@ -228,7 +230,7 @@ func Run() error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadNotesCmd("", ""), tea.WindowSize())
+	return tea.Batch(loadNotesCmd("", ""), doSyncCmd(), tea.WindowSize())
 }
 
 func (m Model) activeFolder() string {
@@ -347,6 +349,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			blocks := notes.ParseBlocks(msg.body)
 			body := notes.BlocksToPlain(blocks)
+			setChecklistStateFor(msg.id)
 			// cache in notes slice
 			var cachedNote *models.Note
 			for i := range m.notes {
@@ -360,7 +363,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.detail != nil && m.detail.ID == msg.id {
 				m.detail.Body = body
 				m.detailBlocks = blocks
-				m.vp.SetContent(renderDetailBody(body, m.detailLineCursor, m.width-2))
+				content, visualCursor := renderDetailBody(body, m.detailLineCursor, m.width-2)
+				// Adjust offset if cursor went off screen due to length change
+				if visualCursor >= m.detailYOffset+m.vp.Height {
+					m.detailYOffset = visualCursor - m.vp.Height + 1
+				}
+				m.vp.SetContent(content)
+				m.vp.SetYOffset(m.detailYOffset)
 			}
 			// update preview pane if still on same note
 			if len(m.notes) > 0 && m.notes[m.cursor].ID == msg.id {
@@ -527,6 +536,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detail = &n
 			m.detailBlocks = nil
 			m.detailLineCursor = 0
+			m.detailYOffset = 0
 			m.vp.GotoTop()
 			m.view = viewDetail
 			if config.Source() == config.SourceApple {
@@ -535,7 +545,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.vp.SetContent(styleMuted.Render("Loading…"))
 				return m, loadAppleBodyCmd(n.ID)
 			}
-			m.vp.SetContent(renderDetailBody(n.Body, 0, m.width-2))
+			content, _ := renderDetailBody(n.Body, 0, m.width-2)
+			m.vp.SetContent(content)
 			return m, nil
 		}
 	case "n":
@@ -579,7 +590,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setStatus("Deleted: " + n.Title)
 			ref := n.Path
 			if config.Source() == config.SourceApple {
-				ref = n.Title
+				ref = n.ID
 			}
 			return m, deleteNoteCmd(n.ID, ref)
 		}
@@ -649,6 +660,7 @@ func (m Model) refreshPreview() (Model, tea.Cmd) {
 	}
 	n := m.notes[m.cursor]
 	if n.Body != "" {
+		setChecklistStateFor(n.ID)
 		m.pvp.SetContent(renderMarkdown(n.Body, m.pvpWidth()))
 		m.pvp.GotoTop()
 		return m, nil
@@ -668,6 +680,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = viewList
 		m.detail = nil
 		m.detailLineCursor = 0
+		m.detailYOffset = 0
 		return m, nil
 
 	case "e":
@@ -704,6 +717,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.detail = nil
 			m.detailLineCursor = 0
+			m.detailYOffset = 0
 			m.view = viewList
 			m.setStatus("Deleted: " + title)
 			return m, deleteNoteCmd(id, path)
@@ -712,16 +726,29 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "j", "down":
 		if m.detail != nil {
 			lines := strings.Split(m.detail.Body, "\n")
-			if m.detailLineCursor < len(lines)-1 {
-				m.detailLineCursor++
-				m = m.syncDetailViewport()
+			if next := nextNonBlankLine(lines, m.detailLineCursor, 1); next != m.detailLineCursor {
+				m.detailLineCursor = next
+				content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2)
+				if visualCursor >= m.detailYOffset+m.vp.Height {
+					m.detailYOffset = visualCursor - m.vp.Height + 1
+				}
+				m.vp.SetContent(content)
+				m.vp.SetYOffset(m.detailYOffset)
 			}
 		}
 
 	case "k", "up":
-		if m.detail != nil && m.detailLineCursor > 0 {
-			m.detailLineCursor--
-			m = m.syncDetailViewport()
+		if m.detail != nil {
+			lines := strings.Split(m.detail.Body, "\n")
+			if next := nextNonBlankLine(lines, m.detailLineCursor, -1); next != m.detailLineCursor {
+				m.detailLineCursor = next
+				content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2)
+				if visualCursor < m.detailYOffset {
+					m.detailYOffset = visualCursor
+				}
+				m.vp.SetContent(content)
+				m.vp.SetYOffset(m.detailYOffset)
+			}
 		}
 
 	case "pgdown", "ctrl+f":
@@ -768,18 +795,22 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // detailLineCursor visible.
 func (m Model) syncDetailViewport() Model {
 	if m.detail == nil {
+		m.detailYOffset = 0
 		return m
 	}
-	m.vp.SetContent(renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2))
-	// scroll so cursor line is always visible
-	if m.detailLineCursor < m.vp.YOffset {
-		m.vp.YOffset = m.detailLineCursor
-	} else if m.detailLineCursor >= m.vp.YOffset+m.vp.Height {
-		m.vp.YOffset = m.detailLineCursor - m.vp.Height + 1
-		if m.vp.YOffset < 0 {
-			m.vp.YOffset = 0
-		}
+	content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.width-2)
+	
+	if visualCursor < m.detailYOffset {
+		m.detailYOffset = visualCursor
+	} else if visualCursor >= m.detailYOffset+m.vp.Height {
+		m.detailYOffset = visualCursor - m.vp.Height + 1
 	}
+	if m.detailYOffset < 0 {
+		m.detailYOffset = 0
+	}
+	
+	m.vp.SetContent(content)
+	m.vp.SetYOffset(m.detailYOffset)
 	return m
 }
 
@@ -856,38 +887,182 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ── Detail body helpers ───────────────────────────────────────────────────────
 
+// currentChecklistState holds the real checked/unchecked state for whichever
+// Apple note is currently displayed (detail view or list preview), keyed by
+// each checklist item's trimmed text — see notes.ChecklistState for why this
+// can't just be parsed out of the note body like everything else. It's
+// package-level rather than threaded through render call args because
+// renderDetailBody/renderMarkdown/renderMDLine are plain functions called
+// from many places in Update/View; Bubble Tea's single-threaded Update/View
+// loop means there's no concurrent-render hazard in setting it right before
+// a render pass. nil means "unknown, or genuinely no Apple checklist items
+// here" — either way, bullets render as plain bullets rather than a guessed
+// checkbox, which is the whole point of having this at all.
+var currentChecklistState map[string]bool
+
+// checklistLookup reports whether a bullet's text is a real Apple checklist
+// item and, if so, its done state. isItem is false for anything not
+// confirmed as a checklist item (a plain bullet, or state not yet loaded) —
+// callers should render those as plain bullets, not a checkbox.
+func checklistLookup(text string) (isItem, done bool) {
+	if currentChecklistState == nil {
+		return false, false
+	}
+	d, ok := currentChecklistState[strings.TrimSpace(text)]
+	return ok, d
+}
+
+// setChecklistStateFor loads the real checklist state for an Apple note
+// (best-effort — see notes.ChecklistState) into currentChecklistState ahead
+// of a render pass. Call this with the ID of whichever note is about to be
+// rendered; on any failure (no Full Disk Access, note not found, non-Apple
+// source) it clears the state so bullets fall back to plain rendering
+// instead of showing stale state from a previously viewed note.
+func setChecklistStateFor(id string) {
+	if config.Source() != config.SourceApple || id == "" {
+		currentChecklistState = nil
+		return
+	}
+	state, err := notes.ChecklistState(id)
+	if err != nil {
+		currentChecklistState = nil
+		return
+	}
+	currentChecklistState = state
+}
+
+// nextNonBlankLine walks from `from` in direction dir (+1 or -1), skipping
+// blank/whitespace-only lines, and returns the index of the next non-blank
+// line. It returns `from` unchanged if there is no non-blank line before the
+// start/end of lines in that direction, so j/k navigation stops instead of
+// landing on empty space between list items or paragraphs.
+func nextNonBlankLine(lines []string, from, dir int) int {
+	i := from + dir
+	for i >= 0 && i < len(lines) {
+		if strings.TrimSpace(lines[i]) != "" {
+			return i
+		}
+		i += dir
+	}
+	return from
+}
+
 // renderDetailBody renders the note body with line-level cursor highlighting.
 // Checkbox lines get ☐/☑ preserved; the selected line is highlighted.
-func renderDetailBody(body string, cursor, width int) string {
+func renderDetailBody(body string, cursor, width int) (string, int) {
 	if body == "" {
-		return styleMuted.Render("(empty)")
+		return styleMuted.Render("(empty)"), 0
 	}
 	lines := strings.Split(body, "\n")
+	lines = preprocessMarkdownTables(lines, width)
+
 	var sb strings.Builder
+	visualCursor := 0
+	currentVisualLines := 0
+
 	for i, line := range lines {
-		if i == cursor {
-			sb.WriteString(styleSelected.Width(width).Render(line) + "\n")
-		} else if strings.HasPrefix(line, "☑ ") {
-			sb.WriteString(styleStrike.Render(line) + "\n")
-		} else {
-			sb.WriteString(renderMDLine(line, width) + "\n")
+		disp := line
+		trimmedDisp := strings.TrimSpace(disp)
+		if config.Source() == config.SourceApple {
+			idx := strings.IndexFunc(disp, func(r rune) bool { return r != ' ' && r != '\t' })
+			leading := ""
+			if idx > 0 {
+				leading = disp[:idx]
+			}
+			for _, pfx := range []string{"• ", "- ", "* "} {
+				if !strings.HasPrefix(trimmedDisp, pfx) {
+					continue
+				}
+				itemText := strings.TrimPrefix(trimmedDisp, pfx)
+				if isItem, done := checklistLookup(itemText); isItem {
+					marker := "☐ "
+					if done {
+						marker = "☑ "
+					}
+					disp = leading + marker + itemText
+					trimmedDisp = strings.TrimSpace(disp)
+				}
+				break
+			}
 		}
+
+		var formatted string
+		if i == cursor {
+			formatted = styleSelected.Render(renderMDLine(disp, width))
+			visualCursor = currentVisualLines
+		} else if strings.HasPrefix(trimmedDisp, "☑ ") || strings.HasPrefix(trimmedDisp, "- [x] ") || strings.HasPrefix(trimmedDisp, "- [X] ") || strings.HasPrefix(trimmedDisp, "* [x] ") || strings.HasPrefix(trimmedDisp, "* [X] ") {
+			text := trimmedDisp
+			for _, pfx := range []string{"☑ ", "- [x] ", "- [X] ", "* [x] ", "* [X] "} {
+				if strings.HasPrefix(text, pfx) {
+					text = strings.TrimPrefix(text, pfx)
+					break
+				}
+			}
+			idx := strings.IndexFunc(disp, func(r rune) bool { return r != ' ' && r != '\t' })
+			leading := ""
+			if idx > 0 {
+				leading = disp[:idx]
+			}
+			formatted = leading + styleStrike.Render("☑ " + renderInline(text))
+		} else if strings.HasPrefix(trimmedDisp, "☐ ") || strings.HasPrefix(trimmedDisp, "- [ ] ") || strings.HasPrefix(trimmedDisp, "* [ ] ") {
+			text := trimmedDisp
+			for _, pfx := range []string{"☐ ", "- [ ] ", "* [ ] "} {
+				if strings.HasPrefix(text, pfx) {
+					text = strings.TrimPrefix(text, pfx)
+					break
+				}
+			}
+			idx := strings.IndexFunc(disp, func(r rune) bool { return r != ' ' && r != '\t' })
+			leading := ""
+			if idx > 0 {
+				leading = disp[:idx]
+			}
+			formatted = leading + styleMuted.Render("☐ " + renderInline(text))
+		} else {
+			formatted = renderMDLine(disp, width)
+		}
+
+		// Count visual lines this logical line will take when wrapped
+		// wrap.String wraps at the given width, we split by \n to count
+		wrapped := wrap.String(formatted, width)
+		currentVisualLines += strings.Count(wrapped, "\n") + 1
+		
+		sb.WriteString(wrapped + "\n")
 	}
-	return sb.String()
+	return sb.String(), visualCursor
 }
 
 // toggleCheckboxLine toggles list items and checkboxes.
 // • item  →  ☑ item  (check off a regular bullet)
-// ☑ item  →  • item  (uncheck back to bullet)
+// ☑ item  →  • item / ☐ item  (uncheck back to bullet or box)
 // ☐ item  →  ☑ item  (check an Apple-checklist item)
 func toggleCheckboxLine(line string) string {
+	idx := strings.IndexFunc(line, func(r rune) bool { return r != ' ' && r != '\t' })
+	leading := ""
+	trimmed := line
+	if idx > 0 {
+		leading = line[:idx]
+		trimmed = line[idx:]
+	}
 	switch {
-	case strings.HasPrefix(line, "• "):
-		return "☑ " + line[len("• "):]
-	case strings.HasPrefix(line, "☑ "):
-		return "• " + line[len("☑ "):]
-	case strings.HasPrefix(line, "☐ "):
-		return "☑ " + line[len("☐ "):]
+	case strings.HasPrefix(trimmed, "- [ ] "):
+		return leading + "- [x] " + strings.TrimPrefix(trimmed, "- [ ] ")
+	case strings.HasPrefix(trimmed, "* [ ] "):
+		return leading + "* [x] " + strings.TrimPrefix(trimmed, "* [ ] ")
+	case strings.HasPrefix(trimmed, "- [x] ") || strings.HasPrefix(trimmed, "- [X] "):
+		return leading + "- [ ] " + trimmed[6:]
+	case strings.HasPrefix(trimmed, "* [x] ") || strings.HasPrefix(trimmed, "* [X] "):
+		return leading + "* [ ] " + trimmed[6:]
+	case strings.HasPrefix(trimmed, "• "):
+		return leading + "☑ " + strings.TrimPrefix(trimmed, "• ")
+	case strings.HasPrefix(trimmed, "- "):
+		return leading + "☑ " + strings.TrimPrefix(trimmed, "- ")
+	case strings.HasPrefix(trimmed, "* "):
+		return leading + "☑ " + strings.TrimPrefix(trimmed, "* ")
+	case strings.HasPrefix(trimmed, "☑ "):
+		return leading + "☐ " + strings.TrimPrefix(trimmed, "☑ ")
+	case strings.HasPrefix(trimmed, "☐ "):
+		return leading + "☑ " + strings.TrimPrefix(trimmed, "☐ ")
 	}
 	return line
 }
@@ -900,7 +1075,8 @@ func saveAppleBodyCmd(id, textBody string, detailBlocks []notes.Block) tea.Cmd {
 		if err := notes.UpdateBody(id, html); err != nil {
 			return errMsg{err}
 		}
-		return nil
+		body, err := notes.ReadApple(id)
+		return appleBodyMsg{id: id, body: body, err: err}
 	}
 }
 
@@ -1317,42 +1493,76 @@ func renderMarkdown(body string, width int) string {
 	if body == "" {
 		return styleMuted.Render("(empty)")
 	}
+	lines := strings.Split(body, "\n")
+	lines = preprocessMarkdownTables(lines, width)
 	var sb strings.Builder
-	for _, line := range strings.Split(body, "\n") {
+	for _, line := range lines {
 		sb.WriteString(renderMDLine(line, width) + "\n")
 	}
-	return sb.String()
+	return lipgloss.NewStyle().Width(width).Render(sb.String())
 }
 
 func renderMDLine(line string, width int) string {
-	t := strings.TrimRight(line, " \t")
+	t := strings.TrimSpace(line)
+	idx := strings.IndexFunc(line, func(r rune) bool { return r != ' ' && r != '\t' })
+	leading := ""
+	if idx > 0 {
+		leading = line[:idx]
+	}
 
 	switch {
 	case strings.HasPrefix(t, "### "):
-		return styleMDH3.Render(strings.TrimPrefix(t, "### "))
+		return leading + styleMDH3.Render(strings.TrimPrefix(t, "### "))
 	case strings.HasPrefix(t, "## "):
-		return styleMDH2.Render(strings.TrimPrefix(t, "## "))
+		return leading + styleMDH2.Render(strings.TrimPrefix(t, "## "))
 	case strings.HasPrefix(t, "# "):
-		return styleMDH1.Render(strings.TrimPrefix(t, "# "))
+		return leading + styleMDH1.Render(strings.TrimPrefix(t, "# "))
 	case strings.HasPrefix(t, "> "):
-		return styleMDQuote.Render("│ " + renderInline(strings.TrimPrefix(t, "> ")))
+		return leading + styleMDQuote.Render("│ " + renderInline(strings.TrimPrefix(t, "> ")))
 	case t == ">":
-		return styleMDQuote.Render("│")
+		return leading + styleMDQuote.Render("│")
 	case t == "---" || t == "***" || t == "___":
 		return styleDivider.Render(strings.Repeat("─", width))
+	case strings.HasPrefix(t, "├"):
+		return leading + styleMuted.Render(t)
+	case strings.HasPrefix(t, "│"):
+		var sb strings.Builder
+		sb.WriteString(leading)
+		parts := strings.Split(t, "│")
+		for j, p := range parts {
+			if j > 0 {
+				sb.WriteString(styleMuted.Render("│"))
+			}
+			sb.WriteString(renderInline(p))
+		}
+		return sb.String()
 	case strings.HasPrefix(t, "- [ ] ") || strings.HasPrefix(t, "* [ ] "):
-		return styleMuted.Render("☐ " + t[6:])
+		return leading + styleMuted.Render("☐ ") + renderInline(t[6:])
 	case strings.HasPrefix(t, "- [x] ") || strings.HasPrefix(t, "- [X] ") ||
 		strings.HasPrefix(t, "* [x] ") || strings.HasPrefix(t, "* [X] "):
-		return styleStrike.Render("☑ " + t[6:])
+		return leading + styleStrike.Render("☑ " + renderInline(t[6:]))
+	case config.Source() == config.SourceApple && (strings.HasPrefix(t, "• ") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ")):
+		text := t
+		if strings.HasPrefix(t, "• ") {
+			text = strings.TrimPrefix(t, "• ")
+		} else {
+			text = t[2:]
+		}
+		if isItem, done := checklistLookup(text); isItem {
+			if done {
+				return leading + styleStrike.Render("☑ " + renderInline(text))
+			}
+			return leading + styleMuted.Render("☐ ") + renderInline(text)
+		}
+		return leading + "  • " + renderInline(text)
 	case strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* "):
-		return "  • " + renderInline(t[2:])
+		return leading + "  • " + renderInline(t[2:])
 	case strings.HasPrefix(t, "• "):
-		return "  " + renderInline(t)
+		return leading + "  " + renderInline(t)
 	case strings.HasPrefix(t, "☑ "):
-		return styleStrike.Render(t)
+		return leading + styleStrike.Render("☑ " + renderInline(strings.TrimPrefix(t, "☑ ")))
 	case strings.HasPrefix(t, "☐ "):
-		return styleMuted.Render(t)
+		return leading + styleMuted.Render("☐ ") + renderInline(strings.TrimPrefix(t, "☐ "))
 	case strings.HasPrefix(t, "```"):
 		return styleMDCode.Render(t)
 	default:
@@ -1366,7 +1576,8 @@ func renderInline(s string) string {
 		// **bold**
 		if strings.HasPrefix(s[i:], "**") {
 			if end := strings.Index(s[i+2:], "**"); end >= 0 {
-				out.WriteString(styleMDBold.Render(s[i+2 : i+2+end]))
+				leading, content, trailing := splitLeadingTrailingSpaces(s[i+2 : i+2+end])
+				out.WriteString(leading + styleMDBold.Render(content) + trailing)
 				i += 2 + end + 2
 				continue
 			}
@@ -1374,7 +1585,8 @@ func renderInline(s string) string {
 		// ~~strikethrough~~
 		if strings.HasPrefix(s[i:], "~~") {
 			if end := strings.Index(s[i+2:], "~~"); end >= 0 {
-				out.WriteString(styleStrike.Render(s[i+2 : i+2+end]))
+				leading, content, trailing := splitLeadingTrailingSpaces(s[i+2 : i+2+end])
+				out.WriteString(leading + styleStrike.Render(content) + trailing)
 				i += 2 + end + 2
 				continue
 			}
@@ -1382,7 +1594,8 @@ func renderInline(s string) string {
 		// *italic*
 		if s[i] == '*' && (i == 0 || s[i-1] != '*') && (i+1 >= len(s) || s[i+1] != '*') {
 			if end := strings.Index(s[i+1:], "*"); end >= 0 && !strings.HasPrefix(s[i+1+end:], "**") {
-				out.WriteString(styleMuted.Render(s[i+1 : i+1+end]))
+				leading, content, trailing := splitLeadingTrailingSpaces(s[i+1 : i+1+end])
+				out.WriteString(leading + styleMuted.Render(content) + trailing)
 				i += 1 + end + 1
 				continue
 			}
@@ -1390,7 +1603,8 @@ func renderInline(s string) string {
 		// `code`
 		if s[i] == '`' {
 			if end := strings.Index(s[i+1:], "`"); end >= 0 {
-				out.WriteString(styleMDCode.Render(s[i+1 : i+1+end]))
+				leading, content, trailing := splitLeadingTrailingSpaces(s[i+1 : i+1+end])
+				out.WriteString(leading + styleMDCode.Render(content) + trailing)
 				i += 1 + end + 1
 				continue
 			}
@@ -1399,6 +1613,160 @@ func renderInline(s string) string {
 		i++
 	}
 	return out.String()
+}
+
+func splitLeadingTrailingSpaces(s string) (leading, content, trailing string) {
+	start := 0
+	for start < len(s) && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+	if start == len(s) {
+		return s, "", ""
+	}
+	end := len(s)
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+	return s[:start], s[start:end], s[end:]
+}
+
+func stripInlineMarkdownForWidth(s string) string {
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "__", "")
+	s = strings.ReplaceAll(s, "*", "")
+	s = strings.ReplaceAll(s, "_", "")
+	s = strings.ReplaceAll(s, "`", "")
+	s = strings.ReplaceAll(s, "~~", "")
+	return s
+}
+
+func preprocessMarkdownTables(lines []string, width int) []string {
+	out := make([]string, len(lines))
+	copy(out, lines)
+	for i := 0; i < len(out); i++ {
+		t := strings.TrimSpace(out[i])
+		if strings.HasPrefix(t, "|") && strings.HasSuffix(t, "|") {
+			end := i
+			for end < len(out) {
+				t2 := strings.TrimSpace(out[end])
+				if !(strings.HasPrefix(t2, "|") && strings.HasSuffix(t2, "|")) {
+					break
+				}
+				end++
+			}
+			if end-i >= 2 {
+				tableLines := formatMarkdownTable(out[i:end], width)
+				for j := i; j < end; j++ {
+					if j-i < len(tableLines) {
+						out[j] = tableLines[j-i]
+					}
+				}
+			}
+			i = end - 1
+		}
+	}
+	return out
+}
+
+func formatMarkdownTable(lines []string, width ...int) []string {
+	if len(lines) < 2 {
+		return lines
+	}
+	wMax := 0
+	if len(width) > 0 {
+		wMax = width[0]
+	}
+	var rows [][]string
+	for _, l := range lines {
+		cells := strings.Split(strings.Trim(strings.TrimSpace(l), "|"), "|")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		rows = append(rows, cells)
+	}
+
+	colWidths := make([]int, 0)
+	for i, row := range rows {
+		if i == 1 && len(row) > 0 && strings.HasPrefix(row[0], "-") {
+			continue // skip separator
+		}
+		for j, cell := range row {
+			w := runewidth.StringWidth(stripInlineMarkdownForWidth(cell))
+			if j >= len(colWidths) {
+				colWidths = append(colWidths, w)
+			} else if w > colWidths[j] {
+				colWidths[j] = w
+			}
+		}
+	}
+
+	if wMax > 0 && len(colWidths) > 0 {
+		numCols := len(colWidths)
+		borders := 3*numCols + 1
+		avail := wMax - borders
+		if avail < numCols*3 {
+			avail = numCols * 3
+		}
+		sum := 0
+		for _, w := range colWidths {
+			sum += w
+		}
+		for sum > avail {
+			maxIdx := -1
+			maxW := -1
+			minW := max(3, avail/numCols)
+			for j, w := range colWidths {
+				if w > minW && w > maxW {
+					maxW = w
+					maxIdx = j
+				}
+			}
+			if maxIdx == -1 {
+				break
+			}
+			colWidths[maxIdx]--
+			sum--
+		}
+	}
+
+	var out []string
+	for i, row := range rows {
+		var sb strings.Builder
+		if i == 1 && len(row) > 0 && strings.HasPrefix(row[0], "-") {
+			sb.WriteString("├")
+			for j, w := range colWidths {
+				sb.WriteString(strings.Repeat("─", w+2))
+				if j < len(colWidths)-1 {
+					sb.WriteString("┼")
+				}
+			}
+			sb.WriteString("┤")
+		} else {
+			sb.WriteString("│ ")
+			for j, cell := range row {
+				w := 0
+				if j < len(colWidths) {
+					w = colWidths[j]
+				}
+				cleanCell := stripInlineMarkdownForWidth(cell)
+				actualW := runewidth.StringWidth(cleanCell)
+				if actualW > w && w > 0 {
+					cell = runewidth.Truncate(cleanCell, w, "…")
+					actualW = runewidth.StringWidth(stripInlineMarkdownForWidth(cell))
+				}
+				sb.WriteString(cell)
+				if w > actualW {
+					sb.WriteString(strings.Repeat(" ", w-actualW))
+				}
+				if j < len(row)-1 {
+					sb.WriteString(" │ ")
+				}
+			}
+			sb.WriteString(" │")
+		}
+		out = append(out, sb.String())
+	}
+	return out
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -1430,7 +1798,7 @@ func doSyncCmd() tea.Cmd {
 
 		switch src {
 		case config.SourceApple:
-			ns, err = notes.ListApple("")
+			ns, err = notes.ListApple(config.AppleFolder())
 			srcKey = "apple"
 		default:
 			ns, err = notes.List(config.VaultPath())
@@ -1473,7 +1841,7 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 			return deletedMsg{err}
 		}
 		if config.Source() == config.SourceApple {
-			_ = notes.DeleteApple(relPath)
+			_ = notes.DeleteApple(id)
 		} else if relPath != "" {
 			_ = notes.Delete(config.VaultPath(), relPath)
 		}

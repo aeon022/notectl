@@ -41,7 +41,9 @@ func ParseBlocks(html string) []Block {
 		} else {
 			plain = StripHTML(raw)
 		}
-		blocks = append(blocks, Block{RawHTML: raw, Plain: plain})
+		if plain != "" {
+			blocks = append(blocks, Block{RawHTML: raw, Plain: plain})
+		}
 	}
 	return blocks
 }

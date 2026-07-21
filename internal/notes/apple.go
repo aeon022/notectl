@@ -2,6 +2,7 @@ package notes
 
 import (
 	"fmt"
+	"html"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,36 +14,44 @@ import (
 func ListApple(folder string) ([]models.Note, error) {
 	folderFilter := ""
 	if folder != "" {
-		folderFilter = fmt.Sprintf(`of folder "%s"`, escapeAS(folder))
+		folderFilter = fmt.Sprintf(`if fName is "%s" then`, escapeAS(folder))
 	}
 	script := fmt.Sprintf(`
 tell application "Notes"
 	set output to ""
-	set noteList to every note %s
-	repeat with n in noteList
-		set nID to id of n
-		set nName to name of n
-		set nMod to modification date of n
-		set nFolder to ""
-		try
-			set nFolder to name of container of n
-		end try
-		set yr to year of nMod as string
-		set mo to text -2 thru -1 of ("0" & ((month of nMod as integer) as string))
-		set dy to text -2 thru -1 of ("0" & (day of nMod as string))
-		set hr to text -2 thru -1 of ("0" & (hours of nMod as string))
-		set mn to text -2 thru -1 of ("0" & (minutes of nMod as string))
-		set sc to text -2 thru -1 of ("0" & (seconds of nMod as string))
-		set nModStr to yr & "-" & mo & "-" & dy & "T" & hr & ":" & mn & ":" & sc
-		set output to output & "ID:" & nID & linefeed
-		set output to output & "TITLE:" & nName & linefeed
-		set output to output & "FOLDER:" & nFolder & linefeed
-		set output to output & "MODTIME:" & nModStr & linefeed
-		set output to output & "---NOTE---" & linefeed
+	set folderList to every folder
+	repeat with f in folderList
+		set fName to name of f
+		if fName is not "Recently Deleted" and fName is not "Zuletzt gelöscht" then
+			%s
+				set noteList to notes of f
+				repeat with n in noteList
+					set nID to id of n
+					set nName to name of n
+					set nMod to modification date of n
+					
+					set yr to year of nMod as string
+					set mo to text -2 thru -1 of ("0" & ((month of nMod as integer) as string))
+					set dy to text -2 thru -1 of ("0" & (day of nMod as string))
+					set hr to text -2 thru -1 of ("0" & (hours of nMod as string))
+					set mn to text -2 thru -1 of ("0" & (minutes of nMod as string))
+					set sc to text -2 thru -1 of ("0" & (seconds of nMod as string))
+					set nModStr to yr & "-" & mo & "-" & dy & "T" & hr & ":" & mn & ":" & sc
+					set nBody to body of n
+					
+					set output to output & "ID:" & nID & linefeed
+					set output to output & "TITLE:" & nName & linefeed
+					set output to output & "FOLDER:" & fName & linefeed
+					set output to output & "MODTIME:" & nModStr & linefeed
+					set output to output & "BODY:" & nBody & linefeed
+					set output to output & "---NOTE---" & linefeed
+				end repeat
+			%s
+		end if
 	end repeat
 	return output
 end tell
-`, folderFilter)
+`, folderFilter, map[bool]string{true: "end if", false: ""}[folder != ""])
 	out, err := runAppleScript(script)
 	if err != nil {
 		return nil, err
@@ -192,12 +201,14 @@ func TextToHTML(body string) string {
 			inChecklist = true
 		}
 		cls := "Apple-unchecked"
+		marker := "☐ "
 		if checked {
 			cls = "Apple-checked"
+			marker = "☑ "
 		}
 		sb.WriteString(fmt.Sprintf(
-			`<li><span class="Apple-checked-list-item %s">%s</span></li>`,
-			cls, mdInlineToHTML(text),
+			`<li><span class="Apple-checked-list-item %s">%s%s</span></li>`,
+			cls, marker, mdInlineToHTML(text),
 		))
 	}
 	bulletItem := func(text string) {
@@ -210,30 +221,40 @@ func TextToHTML(body string) string {
 	}
 
 	for _, line := range lines {
+		t := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(line, "☐ "):
-			checklistItem(line[len("☐ "):], false)
-		case strings.HasPrefix(line, "☑ "):
-			checklistItem(line[len("☑ "):], true)
-		case strings.HasPrefix(line, "- [ ] "), strings.HasPrefix(line, "* [ ] "):
-			checklistItem(line[6:], false)
-		case strings.HasPrefix(line, "- [x] "), strings.HasPrefix(line, "- [X] "),
-			strings.HasPrefix(line, "* [x] "), strings.HasPrefix(line, "* [X] "):
-			checklistItem(line[6:], true)
-		case strings.HasPrefix(line, "• "):
-			bulletItem(line[len("• "):])
-		case strings.HasPrefix(line, "- "), strings.HasPrefix(line, "* "):
-			bulletItem(line[2:])
-		case strings.HasPrefix(line, "# "):
+		case strings.HasPrefix(t, "☐ "):
+			checklistItem(strings.TrimPrefix(t, "☐ "), false)
+		case strings.HasPrefix(t, "☑ "):
+			checklistItem(strings.TrimPrefix(t, "☑ "), true)
+		case strings.HasPrefix(t, "- [ ] "):
+			checklistItem(strings.TrimPrefix(t, "- [ ] "), false)
+		case strings.HasPrefix(t, "* [ ] "):
+			checklistItem(strings.TrimPrefix(t, "* [ ] "), false)
+		case strings.HasPrefix(t, "- [x] "):
+			checklistItem(strings.TrimPrefix(t, "- [x] "), true)
+		case strings.HasPrefix(t, "- [X] "):
+			checklistItem(strings.TrimPrefix(t, "- [X] "), true)
+		case strings.HasPrefix(t, "* [x] "):
+			checklistItem(strings.TrimPrefix(t, "* [x] "), true)
+		case strings.HasPrefix(t, "* [X] "):
+			checklistItem(strings.TrimPrefix(t, "* [X] "), true)
+		case strings.HasPrefix(t, "• "):
+			bulletItem(strings.TrimPrefix(t, "• "))
+		case strings.HasPrefix(t, "- "):
+			bulletItem(strings.TrimPrefix(t, "- "))
+		case strings.HasPrefix(t, "* "):
+			bulletItem(strings.TrimPrefix(t, "* "))
+		case strings.HasPrefix(t, "# "):
 			closeChecklist(); closeList()
-			sb.WriteString("<h1>" + mdInlineToHTML(line[2:]) + "</h1>")
-		case strings.HasPrefix(line, "## "):
+			sb.WriteString("<h1>" + mdInlineToHTML(t[2:]) + "</h1>")
+		case strings.HasPrefix(t, "## "):
 			closeChecklist(); closeList()
-			sb.WriteString("<h2>" + mdInlineToHTML(line[3:]) + "</h2>")
-		case strings.HasPrefix(line, "### "):
+			sb.WriteString("<h2>" + mdInlineToHTML(t[3:]) + "</h2>")
+		case strings.HasPrefix(t, "### "):
 			closeChecklist(); closeList()
-			sb.WriteString("<h3>" + mdInlineToHTML(line[4:]) + "</h3>")
-		case line == "":
+			sb.WriteString("<h3>" + mdInlineToHTML(t[4:]) + "</h3>")
+		case t == "":
 			closeChecklist(); closeList()
 			sb.WriteString("<div><br></div>")
 		default:
@@ -325,37 +346,119 @@ func StripHTML(s string) string {
 	lastNL := true        // treat start as newline so first line doesn't get a blank line
 	inChecklist := false  // inside <ul class="Apple-checked-list">
 	pendingBullet := ""   // bullet to emit before next text character
+	headingRunOpen := false // true while inside a heading "line" that may be split
+	// across several sibling <hN> runs (Apple Notes exports title text as
+	// separate <h1>/<h2> runs per formatting change, e.g. one run for a
+	// leading emoji and another for the rest of the text). Only the first
+	// run in such a group opens the line; only the enclosing block close
+	// (div/p/li/...) ends it. This also suppresses redundant <b>/<i> markers
+	// inside a heading, which otherwise land as a stray "**" on their own
+	// line because the heading tag boundaries don't align with them.
+
+	// pendingMarker/activeMarker defer inline-style markers (**, *, ~~, `)
+	// until real text actually arrives. Apple Notes commonly emits formatted
+	// *empty* lines like <div><b><br></b></div> (a blank line that inherited
+	// bold styling rather than actual bold text) — emitting the marker
+	// immediately on tag-open would turn that into a stray "**" with nothing
+	// to wrap. pendingMarker only becomes visible output (and activeMarker,
+	// which owes a matching close) once emitStr/emitRune actually writes
+	// something; a block boundary with no text in between just discards it.
+	pendingMarker := ""
+	activeMarker := ""
+
+	// headingClosePending mirrors pendingMarker's "wait and see" approach but
+	// for the newline a closed </hN> owes: Apple Notes splits one visual
+	// title line into several sibling <hN> runs (see headingRunOpen above),
+	// so </h2> alone can't tell whether the line is really over or another
+	// <h2> run continues it. The close is deferred until something commits
+	// it — a genuine newline, a new tag, or real text — at which point the
+	// line is settled: it was never continued, so it ends now.
+	headingClosePending := false
 
 	emitNL := func() {
+		pendingMarker = ""
+		headingClosePending = false
+		headingRunOpen = false
 		if !lastNL {
 			out.WriteByte('\n')
 			lastNL = true
 		}
 	}
-	emitStr := func(t string) {
-		out.WriteString(t)
-		if len(t) > 0 {
-			lastNL = t[len(t)-1] == '\n'
-		}
-	}
-	emitRune := func(r rune) {
-		if pendingBullet != "" {
-			out.WriteString(pendingBullet)
-			pendingBullet = ""
+	flushPendingMarker := func() {
+		if pendingMarker != "" {
+			out.WriteString(pendingMarker)
+			activeMarker = pendingMarker
+			pendingMarker = ""
 			lastNL = false
 		}
+	}
+	commitHeadingClose := func() {
+		if headingClosePending {
+			headingClosePending = false
+			headingRunOpen = false
+			if !lastNL {
+				out.WriteByte('\n')
+				lastNL = true
+			}
+		}
+	}
+	emitStr := func(t string) {
+		if len(t) == 0 {
+			return
+		}
+		commitHeadingClose()
+		// Bullet must land before any inline marker (☐ **bold**, not **☐ bold**).
+		if pendingBullet != "" {
+			if strings.HasPrefix(t, "☐") || strings.HasPrefix(t, "☑") || (pendingBullet == "• " && strings.HasPrefix(t, "•")) {
+				pendingBullet = ""
+			} else {
+				out.WriteString(pendingBullet)
+				pendingBullet = ""
+				lastNL = false
+			}
+		}
+		flushPendingMarker()
+		out.WriteString(t)
+		lastNL = t[len(t)-1] == '\n'
+	}
+	emitRune := func(r rune) {
+		commitHeadingClose()
+		if pendingBullet != "" {
+			if r == '☐' || r == '☑' || (pendingBullet == "• " && r == '•') {
+				pendingBullet = ""
+			} else {
+				out.WriteString(pendingBullet)
+				pendingBullet = ""
+				lastNL = false
+			}
+		}
+		flushPendingMarker()
 		out.WriteRune(r)
 		lastNL = r == '\n'
 	}
-	// emitMarker writes an inline Markdown marker (**, *, `), flushing a
-	// pending list bullet first so the marker lands after the bullet.
-	emitMarker := func(mk string) {
-		if pendingBullet != "" {
-			out.WriteString(pendingBullet)
-			pendingBullet = ""
+	// openMarker stages an inline Markdown marker (**, *, `) to be emitted
+	// only once real text follows it (see pendingMarker doc above).
+	openMarker := func(mk string) {
+		pendingMarker = mk
+	}
+	// closeMarker emits the matching close for a marker opened by openMarker,
+	// but only if it was actually flushed (i.e. wrapped real text); an
+	// open-with-no-content pair (pendingMarker still holding mk) is discarded
+	// silently instead of leaving an unmatched marker in the output.
+	closeMarker := func(mk string) {
+		if pendingMarker == mk {
+			pendingMarker = ""
+			return
 		}
-		out.WriteString(mk)
-		lastNL = false
+		if activeMarker == mk {
+			if pendingBullet != "" {
+				out.WriteString(pendingBullet)
+				pendingBullet = ""
+			}
+			out.WriteString(mk)
+			activeMarker = ""
+			lastNL = false
+		}
 	}
 
 	handleTag := func(raw string) {
@@ -376,6 +479,14 @@ func StripHTML(s string) string {
 			attrs = strings.ToLower(raw[sp:])
 		}
 
+		if !closing && pendingBullet != "" && len(attrs) > 0 {
+			if strings.Contains(attrs, "apple-unchecked") || strings.Contains(attrs, "unchecked") {
+				pendingBullet = "☐ "
+			} else if strings.Contains(attrs, "apple-checked") || strings.Contains(attrs, "checked") {
+				pendingBullet = "☑ "
+			}
+		}
+
 		switch name {
 		case "br":
 			emitNL()
@@ -383,16 +494,26 @@ func StripHTML(s string) string {
 		case "p", "div", "blockquote", "pre", "table", "tr":
 			if closing {
 				emitNL()
-			} else if name == "blockquote" {
-				emitNL()
-				emitStr("> ")
+			} else {
+				commitHeadingClose()
+				if name == "blockquote" {
+					emitNL()
+					emitStr("> ")
+				}
 			}
 
 		case "h1", "h2", "h3", "h4", "h5", "h6":
 			if closing {
+				// Don't end the line yet — a sibling <hN> run (or a <b>/<i>
+				// wrapper around one) may continue it. Deferred until
+				// commitHeadingClose fires, from whatever comes next.
+				headingClosePending = true
+			} else if headingRunOpen && headingClosePending {
+				// Continuation: a sibling run picking the same line back up.
+				headingClosePending = false
+			} else if !headingRunOpen {
 				emitNL()
-			} else {
-				emitNL()
+				headingRunOpen = true
 				switch name {
 				case "h1":
 					emitStr("# ")
@@ -411,6 +532,7 @@ func StripHTML(s string) string {
 				pendingBullet = ""
 				emitNL()
 			} else {
+				commitHeadingClose()
 				if strings.Contains(attrs, "apple-checked-list") ||
 					strings.Contains(attrs, "task-list") ||
 					strings.Contains(attrs, "checklist") {
@@ -420,9 +542,14 @@ func StripHTML(s string) string {
 
 		case "li":
 			if !closing {
+				headingRunOpen = false
 				emitNL()
-				if inChecklist {
-					pendingBullet = "☐ " // may be updated by inner span
+				if inChecklist || strings.Contains(attrs, "apple-checked") || strings.Contains(attrs, "apple-unchecked") || strings.Contains(attrs, "task-list") || strings.Contains(attrs, "checklist") {
+					if strings.Contains(attrs, "apple-checked") || strings.Contains(attrs, "checked") {
+						pendingBullet = "☑ "
+					} else {
+						pendingBullet = "☐ "
+					}
 				} else {
 					pendingBullet = "• "
 				}
@@ -431,12 +558,12 @@ func StripHTML(s string) string {
 				emitNL()
 			}
 
-		case "span":
+		case "span", "font", "input", "object":
 			// Apple Notes checklist: <span class="Apple-checked-list-item Apple-checked">
-			if !closing && inChecklist && pendingBullet != "" {
-				if strings.Contains(attrs, "apple-unchecked") {
+			if !closing && pendingBullet != "" {
+				if strings.Contains(attrs, "apple-unchecked") || strings.Contains(attrs, "unchecked") {
 					pendingBullet = "☐ "
-				} else if strings.Contains(attrs, "apple-checked") {
+				} else if strings.Contains(attrs, "apple-checked") || strings.Contains(attrs, "checked") {
 					pendingBullet = "☑ "
 				}
 			}
@@ -446,15 +573,44 @@ func StripHTML(s string) string {
 				emitStr("\t")
 			}
 
-		// inline styles → Markdown markers (symmetric, so open/close identical)
+		// inline styles → Markdown markers, deferred until real text follows
+		// (see openMarker/closeMarker doc above). Suppressed entirely inside
+		// a heading line: heading styling already implies emphasis, and
+		// Apple Notes' <b>/<h2> tag boundaries for a title don't line up
+		// with the actual text runs, which otherwise leaves a stray "**"
+		// sitting on its own line.
 		case "b", "strong":
-			emitMarker("**")
+			if !headingRunOpen {
+				if closing {
+					closeMarker("**")
+				} else {
+					openMarker("**")
+				}
+			}
 		case "i", "em":
-			emitMarker("*")
+			if !headingRunOpen {
+				if closing {
+					closeMarker("*")
+				} else {
+					openMarker("*")
+				}
+			}
 		case "s", "strike", "del":
-			emitMarker("~~")
+			if !headingRunOpen {
+				if closing {
+					closeMarker("~~")
+				} else {
+					openMarker("~~")
+				}
+			}
 		case "tt", "code":
-			emitMarker("`")
+			if !headingRunOpen {
+				if closing {
+					closeMarker("`")
+				} else {
+					openMarker("`")
+				}
+			}
 		}
 	}
 
@@ -475,16 +631,106 @@ func StripHTML(s string) string {
 
 	result := out.String()
 	result = strings.ReplaceAll(result, "&nbsp;", " ")
-	result = strings.ReplaceAll(result, "&amp;", "&")
-	result = strings.ReplaceAll(result, "&lt;", "<")
-	result = strings.ReplaceAll(result, "&gt;", ">")
-	result = strings.ReplaceAll(result, "&quot;", `"`)
-	result = strings.ReplaceAll(result, "&#39;", "'")
-	result = strings.ReplaceAll(result, "&apos;", "'")
+	result = strings.ReplaceAll(result, "&ampamp", "&")
+	result = html.UnescapeString(html.UnescapeString(result))
 	for strings.Contains(result, "\n\n\n") {
 		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
 	}
+	result = cleanLineMarkers(result)
+	result = collapseAdjacentMarkers(result)
+	result = ensureEmojiSpaces(result)
 	return strings.TrimSpace(result)
+}
+
+// collapseAdjacentMarkers merges back-to-back runs of the same inline marker
+// (e.g. "**text1****text2**") into one continuous span ("**text1text2**").
+// Apple Notes frequently splits a single visually-bold phrase into several
+// adjacent <b> runs with identical styling (attribute-boundary artifacts of
+// its rich text model), which round-trips through StripHTML as a close
+// immediately followed by a re-open of the same marker with nothing between
+// them — harmless once rendered, but needlessly noisy in the underlying text.
+func collapseAdjacentMarkers(s string) string {
+	for _, mk := range []string{"**", "~~", "`"} {
+		s = strings.ReplaceAll(s, mk+mk, "")
+	}
+	return s
+}
+
+func cleanLineMarkers(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		changed := true
+		for changed {
+			changed = false
+			for _, p := range []struct{ prefix, repl string }{
+				{"• ☐ ", "☐ "},
+				{"• ☑ ", "☑ "},
+				{"☐ ☐ ", "☐ "},
+				{"☑ ☑ ", "☑ "},
+				{"• • ", "• "},
+				{"☐ • ", "☐ "},
+				{"☑ • ", "☑ "},
+			} {
+				if strings.HasPrefix(trimmed, p.prefix) {
+					trimmed = p.repl + strings.TrimPrefix(trimmed, p.prefix)
+					changed = true
+					break
+				}
+			}
+		}
+		idx := strings.IndexFunc(l, func(r rune) bool { return r != ' ' && r != '\t' })
+		if idx > 0 && trimmed != "" {
+			lines[i] = l[:idx] + trimmed
+		} else if trimmed != "" {
+			lines[i] = trimmed
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isEmojiRune(r rune) bool {
+	if r == '☐' || r == '☑' || r == '✅' || r == '❌' || r == '•' || r == '📋' || r == '👶' || r == '🛒' || r == '🛏' || r == '🏥' {
+		return true
+	}
+	switch {
+	case r >= 0x1F300 && r <= 0x1FAFF:
+		return true
+	case r >= 0x2600 && r <= 0x27BF:
+		return true
+	case r >= 0x2300 && r <= 0x23FF:
+		return true
+	case r >= 0x2B00 && r <= 0x2BFF:
+		return true
+	case r >= 0x1F100 && r <= 0x1F2FF:
+		return true
+	}
+	return false
+}
+
+func isEmojiModifier(r rune) bool {
+	return r == 0xFE0F || r == 0xFE0E || (r >= 0x1F3FB && r <= 0x1F3FF) || r == 0x200D || r == 0x20E3
+}
+
+func ensureEmojiSpaces(s string) string {
+	runes := []rune(s)
+	var out []rune
+	for i := 0; i < len(runes); i++ {
+		out = append(out, runes[i])
+		if isEmojiRune(runes[i]) {
+			for i+1 < len(runes) && isEmojiModifier(runes[i+1]) {
+				i++
+				out = append(out, runes[i])
+			}
+			if i+1 < len(runes) {
+				next := runes[i+1]
+				if next != ' ' && next != '\t' && next != '\n' && next != '\r' && !isEmojiRune(next) && !isEmojiModifier(next) {
+					out = append(out, ' ')
+				}
+			}
+		}
+	}
+	return string(out)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -512,6 +758,7 @@ func parseAppleNotes(out string) []models.Note {
 		}
 		n := models.Note{Source: "apple"}
 		var appleID string
+		var bodyLines []string
 		for _, line := range strings.Split(block, "\n") {
 			switch {
 			case strings.HasPrefix(line, "ID:"):
@@ -525,6 +772,12 @@ func parseAppleNotes(out string) []models.Note {
 					strings.TrimPrefix(line, "MODTIME:"), time.Local)
 				n.ModTime = t
 				n.Created = t
+			case strings.HasPrefix(line, "BODY:"):
+				bodyLines = append(bodyLines, strings.TrimPrefix(line, "BODY:"))
+			default:
+				if len(bodyLines) > 0 {
+					bodyLines = append(bodyLines, line)
+				}
 			}
 		}
 		if appleID == "" {
@@ -535,6 +788,11 @@ func parseAppleNotes(out string) []models.Note {
 			n.Title = "Untitled"
 		}
 		n.ID = "apple-" + appleID
+		if len(bodyLines) > 0 {
+			rawBody := strings.Join(bodyLines, "\n")
+			blocks := ParseBlocks(rawBody)
+			n.Body = BlocksToPlain(blocks)
+		}
 		notes = append(notes, n)
 	}
 	return notes

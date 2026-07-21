@@ -15,10 +15,10 @@ func TestTextToHTMLMarkdownBullets(t *testing.T) {
 
 func TestTextToHTMLMarkdownCheckboxes(t *testing.T) {
 	got := TextToHTML("- [ ] open\n- [x] done")
-	if !strings.Contains(got, `Apple-unchecked">open`) {
+	if !strings.Contains(got, `Apple-unchecked">☐ open`) {
 		t.Errorf("unchecked item not converted: %q", got)
 	}
-	if !strings.Contains(got, `Apple-checked">done`) {
+	if !strings.Contains(got, `Apple-checked">☑ done`) {
 		t.Errorf("checked item not converted: %q", got)
 	}
 	if strings.Contains(got, "[ ]") || strings.Contains(got, "[x]") {
@@ -99,3 +99,54 @@ func TestRoundTripTextHTMLText(t *testing.T) {
 		t.Errorf("round trip mismatch:\norig: %q\nback: %q", orig, back)
 	}
 }
+
+func TestAppleChecklistStripHTML(t *testing.T) {
+	// When Apple Notes imports HTML, it strips class="Apple-checked-list" and leaves <ul><li>☑ item</li></ul>
+	html := `<ul><li>☑ done item</li><li><font face="AppleSymbols">☐</font> open item</li></ul>`
+	got := StripHTML(html)
+	want := "☑ done item\n☐ open item"
+	if got != want {
+		t.Errorf("StripHTML Apple checklist = %q, want %q", got, want)
+	}
+}
+
+func TestStripHTMLEmojiSpaces(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{`<div><font face=".AppleColorEmojiUI">🛏️</font><b>Schlafen</b></div>`, `🛏️ **Schlafen**`},
+		{`<li><font face=".AppleColorEmojiUI">❌</font>KEINE Decke</li>`, `• ❌ KEINE Decke`},
+		{`<div>📋<b>Orga</b></div>`, `📋 **Orga**`},
+		{`<div>☑done</div>`, `☑ done`},
+		{`<div>☐open</div>`, `☐ open`},
+	}
+	for _, tc := range tests {
+		got := StripHTML(tc.in)
+		if got != tc.want {
+			t.Errorf("StripHTML(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCleanLineMarkers(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"• ☐ open item", "☐ open item"},
+		{"• ☑ done item", "☑ done item"},
+		{"☐ ☐ double uncheck", "☐ double uncheck"},
+		{"☑ ☑ double check", "☑ double check"},
+		{"• • double bullet", "• double bullet"},
+		{"☐ • check bullet", "☐ check bullet"},
+		{"☑ • check bullet", "☑ check bullet"},
+	}
+	for _, tc := range tests {
+		got := cleanLineMarkers(tc.in)
+		if got != tc.want {
+			t.Errorf("cleanLineMarkers(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+

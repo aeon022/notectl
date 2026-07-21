@@ -292,7 +292,22 @@ Environment variable override:
 export NOTECTL_VAULT_PATH=~/Documents/ObsidianVault
 ```
 
+### Apple Notes (`source: apple`) & Checklists
+
+When `source: apple` is configured, `notectl` syncs directly with the native macOS **Notes.app**.
+
+#### Full Disk Access Requirement for GUI Checklists
+When reading notes via standard macOS AppleScript (`body of note`), macOS itself strips internal checklist metadata and returns all checklist items as plain HTML bullets (`<ul><li>item</li></ul>`), without distinguishing between checked (`☑`) and unchecked (`☐`) status.
+
+To allow `notectl` to accurately synchronize the `checked` vs `unchecked` status of checklists created inside the native Apple Notes GUI:
+1. Open **System Settings → Privacy & Security → Full Disk Access**.
+2. Grant **Full Disk Access** to your terminal emulator (e.g., `Terminal`, `iTerm2`, `Alacritty`, or `Claude Desktop`).
+3. Restart your terminal application.
+
+When Full Disk Access is enabled, `notectl` can read `NoteStore.sqlite` (`~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite`) without macOS Sandboxing restrictions and preserve accurate checklist states across CLI, TUI, and AI MCP tools.
+
 ---
+
 
 ## MCP — AI Integration
 
