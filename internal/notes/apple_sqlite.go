@@ -96,8 +96,14 @@ func readNoteBlob(pk int64) ([]byte, error) {
 	}
 
 	// Read-only: this database is live-owned by Notes.app and synced by
-	// CloudKit; notectl only ever reads it.
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&immutable=1")
+	// CloudKit; notectl only ever reads it. Deliberately NOT using
+	// ?immutable=1 here even though the connection is read-only — that flag
+	// tells SQLite the file will never change for the life of the
+	// connection, which is false: Notes.app writes to it continuously while
+	// running, and immutable's caching caused genuinely stale reads (a note
+	// edited seconds earlier read back as "no rows" until the process was
+	// restarted) during testing.
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +125,15 @@ func gunzip(data []byte) ([]byte, error) {
 	defer gz.Close()
 	return io.ReadAll(gz)
 }
+
+// paragraphStyleChecklist is ParagraphStyle.style_type's value for a
+// paragraph Notes.app currently renders as a checklist item (checkbox
+// visible). Determined empirically against a real note's data: its actual
+// checklist items were all style_type 103, while a different note's plain
+// "dashed list" bullets (style_type 100) sometimes still carried a leftover
+// Checklist submessage from an earlier edit — style_type is what Notes.app
+// itself keys off, not just whether a Checklist submessage is present.
+const paragraphStyleChecklist = 103
 
 // parseChecklistState walks the note's AttributeRun sequence in step with
 // its note_text, in UTF-16 code units (Apple's NSString-backed length unit —
@@ -161,8 +176,16 @@ func parseChecklistState(plain []byte) (map[string]bool, error) {
 
 	forEachField(note, 5, func(runBytes []byte) bool { // Note.attribute_run
 		length, _ := getVarintField(runBytes, 1) // AttributeRun.length
-		if ps, ok := getMessageField(runBytes, 2); ok {         // paragraph_style
-			if cl, ok := getMessageField(ps, 5); ok { // checklist
+		if ps, ok := getMessageField(runBytes, 2); ok { // paragraph_style
+			styleType, _ := getVarintField(ps, 1) // ParagraphStyle.style_type
+			if cl, ok := getMessageField(ps, 5); ok && styleType == paragraphStyleChecklist {
+				// A Checklist submessage can survive on a paragraph after
+				// it's been converted back to a plain/dashed list (observed
+				// on a real note: style_type 100 "dashed list" carrying a
+				// leftover checklist.done from when it was style_type 103)
+				// — Notes.app itself no longer renders that as a checkbox,
+				// so style_type is the actual source of truth, not just the
+				// Checklist submessage's presence.
 				lineHasChecklist = true
 				done, _ := getVarintField(cl, 2) // Checklist.done
 				if done == 1 {

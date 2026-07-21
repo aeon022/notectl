@@ -18,8 +18,25 @@ func buildChecklistEntry(uuid byte, done int32) []byte {
 }
 
 // buildParagraphStyle encodes a ParagraphStyle with only checklist (field 5) set.
+// buildParagraphStyle encodes a ParagraphStyle with style_type=103 (the
+// value Notes.app actually uses for an active checklist paragraph — see
+// paragraphStyleChecklist) and the given checklist submessage.
 func buildParagraphStyle(checklist []byte) []byte {
 	var b []byte
+	b = protowire.AppendTag(b, 1, protowire.VarintType)
+	b = protowire.AppendVarint(b, uint64(paragraphStyleChecklist))
+	b = protowire.AppendTag(b, 5, protowire.BytesType)
+	b = protowire.AppendBytes(b, checklist)
+	return b
+}
+
+// buildParagraphStyleWithType encodes a ParagraphStyle with an explicit
+// style_type, for tests exercising the "stale Checklist submessage on a
+// non-checklist style_type" case.
+func buildParagraphStyleWithType(styleType int32, checklist []byte) []byte {
+	var b []byte
+	b = protowire.AppendTag(b, 1, protowire.VarintType)
+	b = protowire.AppendVarint(b, uint64(styleType))
 	b = protowire.AppendTag(b, 5, protowire.BytesType)
 	b = protowire.AppendBytes(b, checklist)
 	return b
@@ -163,6 +180,29 @@ func TestParseChecklistState_SplitRunsWithinOneChecklistLine(t *testing.T) {
 	}
 	if done, ok := state["bold and plain"]; !ok || !done {
 		t.Errorf("got ok=%v done=%v, want ok=true done=true", ok, done)
+	}
+}
+
+func TestParseChecklistState_StaleChecklistDataOnNonChecklistStyleIsIgnored(t *testing.T) {
+	// Observed on a real note: a paragraph with style_type 100 ("dashed
+	// list", a plain bullet variant — not a checkbox) still carried a
+	// Checklist submessage left over from when it was once style_type 103.
+	// Notes.app renders it as a plain bullet; parseChecklistState must
+	// agree, not trust the Checklist submessage's mere presence.
+	text := "Stale bullet\n"
+	runs := [][]byte{
+		buildAttributeRun(utf16Len(text), buildParagraphStyleWithType(100, buildChecklistEntry(1, 1))),
+	}
+	note := buildNote(text, runs)
+	doc := buildDocument(note)
+	blob := buildNoteStoreProto(doc)
+
+	state, err := parseChecklistState(blob)
+	if err != nil {
+		t.Fatalf("parseChecklistState failed: %v", err)
+	}
+	if _, ok := state["Stale bullet"]; ok {
+		t.Errorf("style_type 100 with a leftover Checklist submessage should not be treated as an active checklist item, got entry in state: %v", state)
 	}
 }
 

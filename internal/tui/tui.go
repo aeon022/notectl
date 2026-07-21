@@ -1348,7 +1348,7 @@ func (m Model) renderDetail() string {
 		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
 	}
 	helpStr := "esc:back  e:edit  d:delete  o:notes  j/k:scroll  space:toggle checkbox  q:quit"
-	b.WriteString("\n" + styleHelp.Render(helpStr) + styleMuted.Render(pct))
+	b.WriteString("\n\n" + styleHelp.Render(helpStr) + styleMuted.Render(pct))
 	return b.String()
 }
 
@@ -1978,7 +1978,7 @@ func (m *Model) setStatus(s string) {
 }
 
 func (m Model) bodyHeight() int {
-	h := m.height - 7
+	h := m.height - 8
 	if h < 5 {
 		h = 5
 	}
