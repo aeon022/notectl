@@ -1389,9 +1389,18 @@ func renderScrollbar(vp viewport.Model, leftPad string) string {
 		if i > 0 {
 			glyphs.WriteByte('\n')
 		}
-		if i >= thumbTop && i < thumbTop+thumbH {
+		switch {
+		case i == 0:
+			// The first visible row is a note's title line, which renders
+			// with a full-width selected/highlighted background when the
+			// cursor starts there — a bare track glyph butted up against
+			// that fill looked like a break in the bar rather than part of
+			// it. Leaving it blank lets the bar visually start clean on
+			// the row below instead.
+			glyphs.WriteByte(' ')
+		case i >= thumbTop && i < thumbTop+thumbH:
 			glyphs.WriteString(thumb)
-		} else {
+		default:
 			glyphs.WriteString(track)
 		}
 	}
