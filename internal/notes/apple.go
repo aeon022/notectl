@@ -652,7 +652,28 @@ func StripHTML(s string) string {
 	result = cleanLineMarkers(result)
 	result = collapseAdjacentMarkers(result)
 	result = ensureEmojiSpaces(result)
+	result = stripVariationSelectors(result)
 	return strings.TrimSpace(result)
+}
+
+// stripVariationSelectors removes U+FE0E/U+FE0F (text/emoji presentation
+// selectors) from note text. They're invisible hints, not content — but
+// real-world impact showed up as a bug: at least one emoji in actual note
+// content ("🛏️", bed + U+FE0F) is measured as one column wider by
+// lipgloss/go's ansi width package than by go-runewidth, and every attempt
+// to work around that disagreement downstream (padding differently, joining
+// differently) just moved the same mismatch to a new symptom, because both
+// paths ultimately rely on a width function that special-cases this
+// selector. Removing the selector removes the disagreement at its source —
+// terminal emoji fonts render the base codepoint as an emoji glyph with or
+// without it regardless, so nothing is visually lost.
+func stripVariationSelectors(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\uFE0E' || r == '\uFE0F' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // collapseAdjacentMarkers merges back-to-back runs of the same inline marker

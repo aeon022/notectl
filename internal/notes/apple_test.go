@@ -3,6 +3,9 @@ package notes
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+	runewidth "github.com/mattn/go-runewidth"
 )
 
 func TestTextToHTMLMarkdownBullets(t *testing.T) {
@@ -110,6 +113,27 @@ func TestAppleChecklistStripHTML(t *testing.T) {
 	}
 }
 
+func TestStripVariationSelectorsAgreeOnWidth(t *testing.T) {
+	// "\U0001F6CF\uFE0F" (bed + variation selector) is measured one column
+	// wider by lipgloss/charmbracelet-x's ansi width package than by
+	// go-runewidth — real disagreement that surfaced as a scrollbar
+	// rendering bug on a real note (every downstream fix that tried to
+	// paper over the mismatch just moved it somewhere else, since both
+	// paths ultimately call the same width function on the same string).
+	// Stripping the selector removes the disagreement at its source: both
+	// libraries then agree on the width, because there's nothing left for
+	// them to disagree about.
+	in := "\U0001F6CF\uFE0F Schlafen"
+	got := stripVariationSelectors(in)
+	want := "\U0001F6CF Schlafen"
+	if got != want {
+		t.Errorf("stripVariationSelectors(%q) = %q, want %q", in, got, want)
+	}
+	if lipgloss.Width(got) != runewidth.StringWidth(got) {
+		t.Errorf("after stripping, lipgloss.Width(%q)=%d and runewidth.StringWidth=%d should agree, but don't", got, lipgloss.Width(got), runewidth.StringWidth(got))
+	}
+}
+
 func TestStripHTMLIgnoresFormattingWhitespaceBetweenTags(t *testing.T) {
 	// Apple Notes' actual HTML (confirmed on a real note) puts a literal
 	// newline between list items purely for markup readability:
@@ -129,7 +153,7 @@ func TestStripHTMLEmojiSpaces(t *testing.T) {
 		in   string
 		want string
 	}{
-		{`<div><font face=".AppleColorEmojiUI">🛏️</font><b>Schlafen</b></div>`, `🛏️ **Schlafen**`},
+		{`<div><font face=".AppleColorEmojiUI">🛏️</font><b>Schlafen</b></div>`, "🛏 **Schlafen**"}, // variation selector (U+FE0F) stripped — see stripVariationSelectors
 		{`<li><font face=".AppleColorEmojiUI">❌</font>KEINE Decke</li>`, `• ❌ KEINE Decke`},
 		{`<div>📋<b>Orga</b></div>`, `📋 **Orga**`},
 		{`<div>☑done</div>`, `☑ done`},
