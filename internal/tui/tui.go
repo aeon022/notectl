@@ -173,6 +173,7 @@ type Model struct {
 	err        error
 	syncing    bool
 	sp         spinner.Model
+	loading    bool
 }
 
 func New() Model {
@@ -221,6 +222,7 @@ func New() Model {
 		sourceIdx:   srcIdx,
 		sortByDate:  true,
 		paneRatio:   0.38,
+		loading:     true,
 	}
 }
 
@@ -232,7 +234,7 @@ func Run() error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadNotesCmd("", ""), doSyncCmd(), tea.WindowSize())
+	return tea.Batch(loadNotesCmd("", ""), doSyncCmd(), tea.WindowSize(), m.sp.Tick)
 }
 
 func (m Model) activeFolder() string {
@@ -278,6 +280,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bodyArea.SetHeight(m.height - 11)
 
 	case notesLoadedMsg:
+		m.loading = false
 		// Remember which note was selected so we can restore it after the list changes
 		// (e.g. after a sync that reorders notes by mod_time).
 		var prevID string
@@ -441,7 +444,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case spinner.TickMsg:
-		if m.syncing {
+		if m.syncing || m.loading {
 			var cmd tea.Cmd
 			m.sp, cmd = m.sp.Update(msg)
 			return m, cmd
@@ -1127,7 +1130,9 @@ func (m Model) renderSinglePane() string {
 		listH = 1
 	}
 
-	if len(m.notes) == 0 {
+	if m.loading {
+		b.WriteString("\n  " + m.sp.View() + styleHelp.Render(" Loading notes…") + "\n")
+	} else if len(m.notes) == 0 {
 		b.WriteString("\n" + styleHelp.Render("  "+emptyHint()) + "\n")
 	} else {
 		lines, cursorLine := m.buildListLines(m.width, true)
@@ -1173,7 +1178,9 @@ func (m Model) renderTwoPane() string {
 
 	// ── left: note list ──
 	var leftLines []string
-	if len(m.notes) == 0 {
+	if m.loading {
+		leftLines = []string{" " + m.sp.View() + styleHelp.Render(" Loading notes…")}
+	} else if len(m.notes) == 0 {
 		leftLines = []string{styleHelp.Render(" " + emptyHint())}
 	} else {
 		lines, cursorLine := m.buildListLines(listContentW, false)
