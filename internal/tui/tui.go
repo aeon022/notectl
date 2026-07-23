@@ -41,7 +41,7 @@ var (
 	colorGreen  = lipgloss.AdaptiveColor{Light: "28", Dark: "42"}
 	colorRed    = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
 	colorMuted  = lipgloss.AdaptiveColor{Light: "243", Dark: "246"}
-	colorSubtle = lipgloss.AdaptiveColor{Light: "250", Dark: "239"}
+	colorSubtle = lipgloss.AdaptiveColor{Light: "250", Dark: "244"}
 	colorTabBg  = lipgloss.AdaptiveColor{Light: "252", Dark: "235"}
 
 	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
