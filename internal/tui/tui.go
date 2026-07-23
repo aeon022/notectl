@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
@@ -37,11 +38,12 @@ const (
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 var (
-	colorBlue   = lipgloss.AdaptiveColor{Light: "25", Dark: "33"}
-	colorGreen  = lipgloss.AdaptiveColor{Light: "28", Dark: "42"}
-	colorRed    = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
-	colorMuted  = lipgloss.AdaptiveColor{Light: "243", Dark: "246"}
-	colorSubtle = lipgloss.AdaptiveColor{Light: "250", Dark: "244"}
+	// Shared across the suite via missionctl-core/theme.
+	colorBlue   = theme.Blue
+	colorGreen  = theme.Green
+	colorRed    = theme.Red
+	colorMuted  = theme.Muted
+	colorSubtle = theme.Subtle
 	colorTabBg  = lipgloss.AdaptiveColor{Light: "252", Dark: "235"}
 
 	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
@@ -52,8 +54,8 @@ var (
 	styleMuted    = lipgloss.NewStyle().Foreground(colorMuted)
 	styleBold     = lipgloss.NewStyle().Bold(true)
 	styleSelected = lipgloss.NewStyle().
-			Background(lipgloss.AdaptiveColor{Light: "189", Dark: "17"}).
-			Foreground(lipgloss.AdaptiveColor{Light: "16", Dark: "255"}).
+			Background(theme.SelectedBg).
+			Foreground(theme.SelectedFg).
 			Bold(true)
 	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33", Dark: "75"})
 	styleFolder  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "136", Dark: "178"})
