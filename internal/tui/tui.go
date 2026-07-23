@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aeon022/missionctl-core/overlay"
 	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
@@ -33,6 +34,7 @@ const (
 	viewDetail   view = iota
 	viewNew      view = iota
 	viewSettings view = iota
+	viewHelp     view = iota
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -143,8 +145,8 @@ type Model struct {
 
 	// detail / preview
 	detail           *models.Note
-	detailLineCursor int // current line in detail body (for j/k + checkbox toggle)
-	detailYOffset    int // current visual Y offset in detail view
+	detailLineCursor int           // current line in detail body (for j/k + checkbox toggle)
+	detailYOffset    int           // current visual Y offset in detail view
 	detailBlocks     []notes.Block // Apple HTML blocks backing m.detail.Body, for non-destructive saves
 	vp               viewport.Model
 	pvp              viewport.Model // two-pane preview (right side)
@@ -156,7 +158,7 @@ type Model struct {
 	newFocus      int
 	editNote      *models.Note
 	editBlocks    []notes.Block // Apple HTML blocks backing the note being edited (nil for new notes)
-	editorYOffset int // mirrors bodyArea's internal viewport scroll (for mouse clicks)
+	editorYOffset int           // mirrors bodyArea's internal viewport scroll (for mouse clicks)
 
 	// settings
 	vaultInput textinput.Model
@@ -174,6 +176,11 @@ type Model struct {
 	syncing    bool
 	sp         spinner.Model
 	loading    bool
+
+	// "?" transient help popup
+	helpVP   viewport.Model
+	helpPopW int
+	helpPopH int
 }
 
 func New() Model {
@@ -465,6 +472,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateNew(msg)
 		case viewSettings:
 			return m.updateSettings(msg)
+		case viewHelp:
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "q", "esc", "?":
+				m.view = viewList
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.helpVP, cmd = m.helpVP.Update(msg)
+			return m, cmd
 		}
 	}
 
@@ -635,6 +653,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		m.searchInput.Focus()
 		m.searchInput.SetValue("")
+	case "?":
+		m = m.openHelp()
 	case "esc":
 		if m.confirmID != "" {
 			m.confirmID = ""
@@ -804,7 +824,7 @@ func (m Model) syncDetailViewport() Model {
 		return m
 	}
 	content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.detailBodyWidth())
-	
+
 	if visualCursor < m.detailYOffset {
 		m.detailYOffset = visualCursor
 	} else if visualCursor >= m.detailYOffset+m.vp.Height {
@@ -813,7 +833,7 @@ func (m Model) syncDetailViewport() Model {
 	if m.detailYOffset < 0 {
 		m.detailYOffset = 0
 	}
-	
+
 	m.vp.SetContent(content)
 	m.vp.SetYOffset(m.detailYOffset)
 	return m
@@ -1008,7 +1028,7 @@ func renderDetailBody(body string, cursor, width int) (string, int) {
 			if idx > 0 {
 				leading = disp[:idx]
 			}
-			formatted = leading + styleStrike.Render("☑ " + renderInline(text))
+			formatted = leading + styleStrike.Render("☑ "+renderInline(text))
 		} else if strings.HasPrefix(trimmedDisp, "☐ ") || strings.HasPrefix(trimmedDisp, "- [ ] ") || strings.HasPrefix(trimmedDisp, "* [ ] ") {
 			text := trimmedDisp
 			for _, pfx := range []string{"☐ ", "- [ ] ", "* [ ] "} {
@@ -1022,7 +1042,7 @@ func renderDetailBody(body string, cursor, width int) (string, int) {
 			if idx > 0 {
 				leading = disp[:idx]
 			}
-			formatted = leading + styleMuted.Render("☐ " + renderInline(text))
+			formatted = leading + styleMuted.Render("☐ "+renderInline(text))
 		} else {
 			formatted = renderMDLine(disp, width)
 		}
@@ -1031,7 +1051,7 @@ func renderDetailBody(body string, cursor, width int) (string, int) {
 		// wrap.String wraps at the given width, we split by \n to count
 		wrapped := wrap.String(formatted, width)
 		currentVisualLines += strings.Count(wrapped, "\n") + 1
-		
+
 		sb.WriteString(wrapped + "\n")
 	}
 	return sb.String(), visualCursor
@@ -1095,9 +1115,84 @@ func (m Model) View() string {
 		return m.renderNew()
 	case viewSettings:
 		return m.renderSettings()
+	case viewHelp:
+		// "?" is only reachable from the main list, so the list is always
+		// the correct background to keep visible behind the popup. No
+		// enclosing border on the list view, so inset 0 is safe.
+		return overlay.Center(m.renderList(), m.renderHelpPopup(), m.width, m.height, 0)
 	default:
 		return m.renderList()
 	}
+}
+
+func (m Model) helpContent() string {
+	key := func(k string) string { return styleBold.Render(fmt.Sprintf("%-11s", k)) }
+	row := func(k, desc string) string { return "  " + key(k) + styleHelp.Render(desc) + "\n" }
+	section := func(t string) string { return "\n  " + styleHeader.Render(t) + "\n" }
+
+	var b strings.Builder
+	b.WriteString(section("Navigation"))
+	b.WriteString(row("j / k", "move down / up"))
+	b.WriteString(row("g / G", "jump to top / bottom"))
+	b.WriteString(row("pgdn/pgup", "page down / up"))
+	b.WriteString(row("tab", "next folder"))
+	b.WriteString(row("shift+tab", "previous folder"))
+	b.WriteString(row("< / >", "resize panes (two-pane layout)"))
+	b.WriteString(section("Notes"))
+	b.WriteString(row("enter", "open note"))
+	b.WriteString(row("n", "new note"))
+	b.WriteString(row("e", "edit note"))
+	b.WriteString(row("d", "delete note (asks to confirm)"))
+	b.WriteString(row("o", "open in external app"))
+	b.WriteString(row("y", "copy title to clipboard"))
+	b.WriteString(section("Other"))
+	b.WriteString(row("S", "toggle sort (date / title A–Z)"))
+	b.WriteString(row("p", "settings (vault path, source)"))
+	b.WriteString(row("s", "sync"))
+	b.WriteString(row("/", "search (esc clears)"))
+	b.WriteString(row("?", "toggle this help"))
+	b.WriteString(row("q", "quit"))
+	return b.String()
+}
+
+// openHelp sizes and populates the transient help popup (see
+// renderHelpPopup/overlay.Center) from the ACTUAL rendered background
+// height, not the terminal size.
+func (m Model) openHelp() Model {
+	bgLines := strings.Split(m.renderList(), "\n")
+
+	safeH := max(6, len(bgLines))
+	popH := min(safeH, 24)
+	popW := min(70, m.width)
+	if popW < 40 {
+		popW = 40
+	}
+
+	vp := viewport.New(popW-6, popH-5) // border 1+1, padding(1,2) → 2 rows/4 cols; -1 row for footer
+	vp.SetContent(m.helpContent())
+
+	m.helpVP = vp
+	m.helpPopW = popW
+	m.helpPopH = popH
+	m.view = viewHelp
+	return m
+}
+
+// renderHelpPopup renders the help viewport in a bordered box, meant to be
+// composited over the list view via overlay.Center rather than replacing
+// the whole screen — the list stays visible around it.
+func (m Model) renderHelpPopup() string {
+	footer := "esc / ?  close"
+	if m.helpVP.TotalLineCount() > m.helpVP.Height {
+		footer = fmt.Sprintf("j/k scroll (%d%%)  ·  %s", int(m.helpVP.ScrollPercent()*100), footer)
+	}
+	body := m.helpVP.View() + "\n" + styleHelp.Render(footer)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorBlue).
+		Padding(1, 2).
+		Width(m.helpPopW).
+		Render(body)
 }
 
 func (m Model) renderList() string {
@@ -1330,7 +1425,7 @@ func (m Model) renderHelpBar(w int) string {
 			helpBar = styleOK.Render("✓ " + m.status)
 		}
 	} else {
-		helpBar = styleHelp.Render("enter:open  n:new  e:edit  d:delete  y:copy  S:sort  o:editor  s:sync  p:settings  /:search  tab:folder  q:quit")
+		helpBar = styleHelp.Render("enter:open  n:new  e:edit  d:delete  y:copy  S:sort  o:editor  s:sync  p:settings  /:search  tab:folder  ?:help  q:quit")
 	}
 	pad := w - lipgloss.Width(helpBar) - lipgloss.Width(right)
 	if pad < 0 {
@@ -1568,7 +1663,7 @@ func renderMDLine(line string, width int) string {
 	case strings.HasPrefix(t, "# "):
 		return leading + styleMDH1.Render(strings.TrimPrefix(t, "# "))
 	case strings.HasPrefix(t, "> "):
-		return leading + styleMDQuote.Render("│ " + renderInline(strings.TrimPrefix(t, "> ")))
+		return leading + styleMDQuote.Render("│ "+renderInline(strings.TrimPrefix(t, "> ")))
 	case t == ">":
 		return leading + styleMDQuote.Render("│")
 	case t == "---" || t == "***" || t == "___":
@@ -1590,7 +1685,7 @@ func renderMDLine(line string, width int) string {
 		return leading + styleMuted.Render("☐ ") + renderInline(t[6:])
 	case strings.HasPrefix(t, "- [x] ") || strings.HasPrefix(t, "- [X] ") ||
 		strings.HasPrefix(t, "* [x] ") || strings.HasPrefix(t, "* [X] "):
-		return leading + styleStrike.Render("☑ " + renderInline(t[6:]))
+		return leading + styleStrike.Render("☑ "+renderInline(t[6:]))
 	case config.Source() == config.SourceApple && (strings.HasPrefix(t, "• ") || strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* ")):
 		text := t
 		if strings.HasPrefix(t, "• ") {
@@ -1600,7 +1695,7 @@ func renderMDLine(line string, width int) string {
 		}
 		if isItem, done := checklistLookup(text); isItem {
 			if done {
-				return leading + styleStrike.Render("☑ " + renderInline(text))
+				return leading + styleStrike.Render("☑ "+renderInline(text))
 			}
 			return leading + styleMuted.Render("☐ ") + renderInline(text)
 		}
@@ -1610,7 +1705,7 @@ func renderMDLine(line string, width int) string {
 	case strings.HasPrefix(t, "• "):
 		return leading + "  " + renderInline(t)
 	case strings.HasPrefix(t, "☑ "):
-		return leading + styleStrike.Render("☑ " + renderInline(strings.TrimPrefix(t, "☑ ")))
+		return leading + styleStrike.Render("☑ "+renderInline(strings.TrimPrefix(t, "☑ ")))
 	case strings.HasPrefix(t, "☐ "):
 		return leading + styleMuted.Render("☐ ") + renderInline(strings.TrimPrefix(t, "☐ "))
 	case strings.HasPrefix(t, "```"):
