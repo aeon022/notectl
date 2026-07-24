@@ -3,9 +3,13 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aeon022/notectl/internal/models"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/spf13/viper"
 )
 
@@ -244,5 +248,128 @@ func TestHelpOverlay_FitsWithinBackgroundHeight(t *testing.T) {
 	bgLines := len(strings.Split(m.renderList(), "\n"))
 	if m.helpPopH > bgLines {
 		t.Errorf("popup height %d exceeds background height %d", m.helpPopH, bgLines)
+	}
+}
+
+func TestFilterNotes_FuzzyMatchesTitle(t *testing.T) {
+	notes := []models.Note{
+		{ID: "1", Title: "budgetctl release"},
+		{ID: "2", Title: "unrelated"},
+	}
+	got := filterNotes(notes, "bgt")
+	if len(got) != 1 || got[0].ID != "1" {
+		t.Errorf("expected fuzzy 'bgt' to match only the title, got %+v", got)
+	}
+}
+
+func TestFilterNotes_FallsBackToBodyAndTagsSubstring(t *testing.T) {
+	notes := []models.Note{
+		{ID: "1", Title: "unrelated", Body: "mentions budgetctl in passing"},
+		{ID: "2", Title: "also unrelated", Tags: []string{"budgetctl"}},
+		{ID: "3", Title: "no match", Body: "nothing here"},
+	}
+	got := filterNotes(notes, "budgetctl")
+	if len(got) != 2 {
+		t.Errorf("expected body and tag substring matches to keep 2 notes, got %d: %+v", len(got), got)
+	}
+}
+
+func TestFilterNotes_DoesNotFuzzyMatchAcrossTheWholeBody(t *testing.T) {
+	// Regression guard for the design decision (same as diaryctl): fuzzy
+	// must only apply to the short title field, not the long free-form
+	// body — otherwise almost any short query would find SOME subsequence
+	// across a full body and over-match everything.
+	notes := []models.Note{
+		{ID: "1", Title: "short", Body: "a big beach trip yesterday"},
+	}
+	// "bibetr" is a subsequence of the whole body but not a literal
+	// substring, and not a fuzzy match of the short title either.
+	got := filterNotes(notes, "bibetr")
+	if len(got) != 0 {
+		t.Errorf("expected body text to NOT be fuzzy-matched as a whole, got %+v", got)
+	}
+}
+
+func TestFilterNotes_EmptyQueryReturnsAllUnfiltered(t *testing.T) {
+	notes := []models.Note{{ID: "1"}, {ID: "2"}}
+	got := filterNotes(notes, "")
+	if len(got) != 2 {
+		t.Errorf("expected empty query to return all notes, got %d", len(got))
+	}
+}
+
+func TestSearchMode_FiltersLiveAsUserTypes(t *testing.T) {
+	m := New()
+	m.width, m.height = 100, 30
+	notes := []models.Note{
+		{ID: "1", Title: "budgetctl release", ModTime: time.Now()},
+		{ID: "2", Title: "unrelated note", ModTime: time.Now()},
+	}
+	m.allNotes, m.notes = notes, notes
+
+	mi, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = mi.(Model)
+	if !m.searching {
+		t.Fatal("expected '/' to enter search mode")
+	}
+	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	m = mi.(Model)
+	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	m = mi.(Model)
+	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	m = mi.(Model)
+
+	if len(m.notes) != 1 || m.notes[0].ID != "1" {
+		t.Errorf("expected live filtering while typing (no enter needed), got %+v", m.notes)
+	}
+	if m.searchQ != "bgt" {
+		t.Errorf("expected searchQ to track the live input, got %q", m.searchQ)
+	}
+}
+
+func TestFormatNoteRow_SelectedBackgroundSpansFullWidth(t *testing.T) {
+	// Regression test: formatNoteRow used to be built plain, then the
+	// WHOLE composed row was wrapped in one outer styleSelected.Width(w).
+	// Render() call at the caller. dateStyled/meta below carry their own
+	// independent colors, and each one's Render() ends with a full SGR
+	// reset — which clobbered the outer style for everything after it
+	// (same bug class found and fixed in mailctl). Confirmed empirically
+	// with a forced ANSI profile that the selected background did not
+	// extend past the date column. Now applied per-segment instead.
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	n := models.Note{Title: "hello", ModTime: time.Now()}
+	row := formatNoteRow(&n, 60, styleSelected, "")
+	if lipgloss.Width(row) != 60 {
+		t.Errorf("expected the rendered row to be exactly 60 columns wide, got %d", lipgloss.Width(row))
+	}
+
+	openCode := strings.SplitN(styleSelected.Render("x"), "x", 2)[0]
+	lastOpen := strings.LastIndex(row, openCode)
+	if lastOpen == -1 {
+		t.Fatal("expected to find the selected style's escape code in the row at all")
+	}
+	after := strings.TrimSuffix(row[lastOpen+len(openCode):], "\x1b[0m")
+	if after == "" {
+		t.Error("expected trailing padding spaces after the last styled segment")
+	}
+	if strings.TrimSpace(after) != "" {
+		t.Errorf("expected only whitespace (padding) after the last styled segment, got %q", after)
+	}
+}
+
+func TestHighlightMatches_ColorsOnlyMatchedRunes(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	idxs := fuzzyMatchIndexes("bgt", "budgetctl")
+	if idxs == nil {
+		t.Fatal("expected 'bgt' to fuzzy-match 'budgetctl'")
+	}
+	base := lipgloss.NewStyle()
+	out := highlightMatches("budgetctl", idxs, base)
+	if out == base.Render("budgetctl") {
+		t.Error("expected highlightMatches to differ from a plain render for a real match")
 	}
 }

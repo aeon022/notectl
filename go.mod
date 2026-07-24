@@ -11,6 +11,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/muesli/reflow v0.3.0
 	github.com/rivo/uniseg v0.4.7
+	github.com/sahilm/fuzzy v0.1.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	google.golang.org/protobuf v1.36.11

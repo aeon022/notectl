@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"github.com/muesli/reflow/wrap"
+	"github.com/sahilm/fuzzy"
 )
 
 // ── Views ─────────────────────────────────────────────────────────────────────
@@ -46,6 +47,7 @@ var (
 	colorRed    = theme.Red
 	colorMuted  = theme.Muted
 	colorSubtle = theme.Subtle
+	colorAmber  = theme.Amber
 	colorTabBg  = lipgloss.AdaptiveColor{Light: "252", Dark: "235"}
 
 	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
@@ -134,7 +136,8 @@ type Model struct {
 	height int
 
 	// list
-	notes        []models.Note
+	notes        []models.Note // filtered (by searchQ) view of allNotes
+	allNotes     []models.Note // everything loaded for the current folder scope
 	cursor       int
 	searchQ      string
 	searching    bool
@@ -241,7 +244,7 @@ func Run() error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadNotesCmd("", ""), doSyncCmd(), tea.WindowSize(), m.sp.Tick)
+	return tea.Batch(loadNotesCmd(""), doSyncCmd(), tea.WindowSize(), m.sp.Tick)
 }
 
 func (m Model) activeFolder() string {
@@ -297,7 +300,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.view == viewDetail && m.detail != nil {
 			prevID = m.detail.ID
 		}
-		m.notes = msg.notes
+		m.allNotes = msg.notes
+		m.notes = filterNotes(m.allNotes, m.searchQ)
 		m.folders = msg.folders
 		if msg.folderCounts != nil {
 			m.folderCounts = msg.folderCounts
@@ -327,7 +331,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			m.setStatus(fmt.Sprintf("Synced %d notes", msg.count))
-			return m, loadNotesCmd(m.searchQ, m.activeFolder())
+			return m, loadNotesCmd(m.activeFolder())
 		}
 
 	case writeDoneMsg:
@@ -340,7 +344,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.setStatus("Saved: " + name)
 			m.view = viewList
-			return m, loadNotesCmd(m.searchQ, m.activeFolder())
+			return m, loadNotesCmd(m.activeFolder())
 		}
 
 	case deletedMsg:
@@ -354,7 +358,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatus("Settings saved")
 			m.view = viewList
-			return m, loadNotesCmd(m.searchQ, m.activeFolder())
+			return m, loadNotesCmd(m.activeFolder())
 		}
 
 	case appleBodyMsg:
@@ -498,21 +502,27 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.searching {
 		switch msg.String() {
 		case "enter":
-			m.searchQ = m.searchInput.Value()
+			// Filtering already happened live as the user typed (below) —
+			// enter just closes the input box, no DB round-trip needed.
 			m.searching = false
 			m.cursor = 0
-			return m, loadNotesCmd(m.searchQ, m.activeFolder())
 		case "esc":
 			m.searching = false
 			m.searchInput.SetValue("")
 			m.searchQ = ""
 			m.cursor = 0
-			return m, loadNotesCmd("", m.activeFolder())
+			m.notes = filterNotes(m.allNotes, "")
+			m = m.applySortOrder()
 		default:
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(msg)
-			return m, tea.Batch(cmd, loadNotesCmd(m.searchInput.Value(), m.activeFolder()))
+			m.searchQ = m.searchInput.Value()
+			m.cursor = 0
+			m.notes = filterNotes(m.allNotes, m.searchQ)
+			m = m.applySortOrder()
+			return m, cmd
 		}
+		return m, nil
 	}
 
 	// pending delete confirmation — any key other than d/esc cancels
@@ -531,12 +541,12 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		tabs := len(m.folders) + 1
 		m.activeTab = (m.activeTab + 1) % tabs
 		m.cursor = 0
-		return m, loadNotesCmd(m.searchQ, m.activeFolder())
+		return m, loadNotesCmd(m.activeFolder())
 	case "shift+tab":
 		tabs := len(m.folders) + 1
 		m.activeTab = (m.activeTab - 1 + tabs) % tabs
 		m.cursor = 0
-		return m, loadNotesCmd(m.searchQ, m.activeFolder())
+		return m, loadNotesCmd(m.activeFolder())
 	case "j", "down":
 		if m.cursor < len(m.notes)-1 {
 			m.cursor++
@@ -665,7 +675,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchQ = ""
 			m.searchInput.SetValue("")
 			m.cursor = 0
-			return m, loadNotesCmd("", m.activeFolder())
+			m.notes = filterNotes(m.allNotes, "")
+			m = m.applySortOrder()
 		}
 	}
 
@@ -1344,11 +1355,11 @@ func (m Model) buildListLines(w int, withPreview bool) ([]string, int) {
 		if i == m.cursor {
 			cursorLine = len(lines)
 		}
-		row := formatNoteRow(n, w)
+		rowStyle := lipgloss.NewStyle()
 		if i == m.cursor {
-			row = styleSelected.Width(w).Render(row)
+			rowStyle = styleSelected
 		}
-		lines = append(lines, row)
+		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ))
 
 		if withPreview && n.Body != "" {
 			preview := firstBodyLine(n.Body)
@@ -1916,7 +1927,13 @@ func formatMarkdownTable(lines []string, width ...int) []string {
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
-func loadNotesCmd(query, folder string) tea.Cmd {
+// loadNotesCmd fetches notes for folder, unfiltered by search text —
+// search is applied client-side (filterNotes) over the result, live as the
+// user types, rather than round-tripping to SQLite on EVERY keystroke (the
+// previous behavior). Store.Filter.Query / the SQL LIKE path still exists
+// and is still used by `notectl search` and the MCP search tool, just not
+// from here anymore.
+func loadNotesCmd(folder string) tea.Cmd {
 	return func() tea.Msg {
 		s, err := store.New(config.DBPath())
 		if err != nil {
@@ -1924,7 +1941,7 @@ func loadNotesCmd(query, folder string) tea.Cmd {
 		}
 		defer s.Close()
 		ctx := context.Background()
-		ns, err := s.List(ctx, store.Filter{Query: query, Folder: folder, Limit: 500})
+		ns, err := s.List(ctx, store.Filter{Folder: folder, Limit: 500})
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1932,6 +1949,100 @@ func loadNotesCmd(query, folder string) tea.Cmd {
 		counts, _ := s.CountByFolder(ctx)
 		return notesLoadedMsg{notes: ns, folders: folders, folderCounts: counts}
 	}
+}
+
+// filterNotes fuzzy-matches q against each note's title (github.com/
+// sahilm/fuzzy), falling back to a plain substring match on body/tags for
+// notes the title fuzzy-match missed. Body is free-form long text — fuzzy-
+// matching it as one subsequence, like the title, would be nearly
+// meaningless (almost any short query finds SOME subsequence across a full
+// note, over-matching everything), so it stays substring-only, same
+// reasoning as diaryctl's journal-entry search. Does not re-rank by match
+// quality — notes are naturally ordered (date or title, per sortByDate),
+// and re-sorting would scramble that.
+func filterNotes(notes []models.Note, q string) []models.Note {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return notes
+	}
+	titles := make([]string, len(notes))
+	for i, n := range notes {
+		titles[i] = n.Title
+	}
+	matched := make(map[int]bool, len(notes))
+	for _, mt := range fuzzy.Find(q, titles) {
+		matched[mt.Index] = true
+	}
+	ql := strings.ToLower(q)
+	for i, n := range notes {
+		if matched[i] {
+			continue
+		}
+		if strings.Contains(strings.ToLower(n.Body), ql) || tagsContainSubstring(n.Tags, ql) {
+			matched[i] = true
+		}
+	}
+	out := make([]models.Note, 0, len(matched))
+	for i, n := range notes {
+		if matched[i] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func tagsContainSubstring(tags []string, ql string) bool {
+	for _, t := range tags {
+		if strings.Contains(strings.ToLower(t), ql) {
+			return true
+		}
+	}
+	return false
+}
+
+// fuzzyMatchIndexes returns the rune indexes within s that q fuzzy-matched,
+// or nil if q is empty or doesn't match at all.
+func fuzzyMatchIndexes(q, s string) []int {
+	if q == "" {
+		return nil
+	}
+	matches := fuzzy.Find(q, []string{s})
+	if len(matches) == 0 {
+		return nil
+	}
+	return matches[0].MatchedIndexes
+}
+
+// highlightMatches renders s with the rune positions in idxs (from
+// fuzzyMatchIndexes) styled via a warm, underlined variant of base, and
+// every other character via base itself — fzf-style match highlighting.
+//
+// Renders one character at a time rather than nesting a highlighted span
+// inside a single outer Render() call: lipgloss's Render() ends every
+// string with a full SGR reset, so an inner Render() call's reset would
+// wipe out the outer style for everything after the first highlighted
+// character. Per-character rendering keeps every segment self-contained.
+//
+// idxs are indexes into s BEFORE any truncation — callers must resolve
+// indexes against the same, untruncated string used to compute them.
+func highlightMatches(s string, idxs []int, base lipgloss.Style) string {
+	if len(idxs) == 0 {
+		return base.Render(s)
+	}
+	hi := base.Foreground(colorAmber).Underline(true)
+	matchSet := make(map[int]bool, len(idxs))
+	for _, i := range idxs {
+		matchSet[i] = true
+	}
+	var b strings.Builder
+	for i, r := range []rune(s) {
+		if matchSet[i] {
+			b.WriteString(hi.Render(string(r)))
+		} else {
+			b.WriteString(base.Render(string(r)))
+		}
+	}
+	return b.String()
 }
 
 func doSyncCmd() tea.Cmd {
@@ -2145,15 +2256,29 @@ func (m Model) detailBodyWidth() int {
 // view (header fields and scrollable body alike).
 const detailLeftPad = "  "
 
-func formatNoteRow(n *models.Note, width int) string {
+// formatNoteRow builds a note list row. rowStyle carries the selected-row
+// treatment (background+foreground+bold) and is applied directly to the
+// title segment — NOT via an outer Render() wrapping the whole composed
+// row. That used to be how this worked (the caller wrapped the return
+// value in styleSelected.Width(w).Render(...)), and it was broken the same
+// way as an equivalent bug found and fixed in mailctl: dateStyled/meta
+// below carry their OWN independent colors, and lipgloss's Render() ends
+// every string with a full SGR reset — the first inner segment's reset
+// clobbered the outer wrap's style for everything after it, so a selected
+// row's highlight background didn't extend past the date column. Fixed by
+// applying rowStyle per-segment instead, which also makes it safe to
+// highlight fuzzy matches here even on the selected row.
+func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query string) string {
 	dateStr := smartDate(n.ModTime)
-	dateStyled := coloredDate(dateStr, n.ModTime)
+	dateStyled := coloredDate(dateStr, n.ModTime) // independent color, unaffected by rowStyle
+
 	title := n.Title
 	if idx := strings.Index(title, "\n"); idx >= 0 {
 		title = title[:idx]
 	}
 	title = strings.TrimSpace(title)
-	meta := ""
+
+	meta := "" // independent colors (folder/tag), unaffected by rowStyle
 	if n.Folder != "" {
 		meta += styleFolder.Render(" " + n.Folder)
 	}
@@ -2165,15 +2290,22 @@ func formatNoteRow(n *models.Note, width int) string {
 	if titleW < 6 {
 		titleW = 6
 	}
-	title = runewidth.Truncate(title, titleW, "…")
-	titleVisualW := runewidth.StringWidth(title)
-	if titleVisualW < titleW {
-		title += strings.Repeat(" ", titleW-titleVisualW)
+
+	matchIdx := fuzzyMatchIndexes(query, title)
+	titleTrunc := runewidth.Truncate(title, titleW, "…")
+	titleStyled := highlightMatches(titleTrunc, matchIdx, rowStyle)
+	if pad := titleW - runewidth.StringWidth(titleTrunc); pad > 0 {
+		titleStyled += rowStyle.Render(strings.Repeat(" ", pad))
 	}
-	// pad date to 14 chars visually before styling
-	padded := dateStr + strings.Repeat(" ", 14-len([]rune(dateStr)))
-	_ = padded
-	return fmt.Sprintf("%s  %s%s", dateStyled, title, meta)
+
+	row := dateStyled + rowStyle.Render("  ") + titleStyled + meta
+
+	// Pad to full width with rowStyle so a selected row's background spans
+	// the whole line, not just up to the last character of content.
+	if pad := width - lipgloss.Width(row); pad > 0 {
+		row += rowStyle.Render(strings.Repeat(" ", pad))
+	}
+	return row
 }
 
 func coloredDate(s string, t time.Time) string {
