@@ -1343,7 +1343,7 @@ func (m Model) renderTwoPane() string {
 		b.WriteString(" " + l + " " + div + " " + r + "\n")
 	}
 
-	b.WriteString(m.renderHelpBar(m.width))
+	b.WriteString("\n" + m.renderHelpBar(m.width))
 	return b.String()
 }
 
@@ -1444,7 +1444,7 @@ func (m Model) listStartY() int {
 // matching listH (single-pane) / paneH (two-pane) in the render paths.
 func (m Model) listHeight() int {
 	if m.isTwoPane() {
-		h := m.height - 3 - helpBarHeight
+		h := m.height - 3 - helpBarHeight - 1 // -1: blank padding line above the help bar
 		if m.searching {
 			h--
 		}
@@ -1453,7 +1453,7 @@ func (m Model) listHeight() int {
 		}
 		return h
 	}
-	h := m.height - m.listStartY() - helpBarHeight
+	h := m.height - m.listStartY() - helpBarHeight - 1 // -1: blank padding line above the help bar
 	if h < 1 {
 		h = 1
 	}
