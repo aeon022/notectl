@@ -1244,20 +1244,14 @@ func (m Model) renderSinglePane() string {
 	b.WriteString(" " + m.renderTabBar(m.width-1) + "\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 
-	overhead := 4 // header + tabbar + divider + helpbar
 	if m.searching {
 		b.WriteString("  " + m.searchInput.View() + "\n\n")
-		overhead += 2
 	}
 	if m.searchQ != "" {
 		b.WriteString(styleMuted.Render("  /"+m.searchQ) + "\n")
-		overhead++
 	}
 
-	listH := m.height - overhead
-	if listH < 1 {
-		listH = 1
-	}
+	listH := m.listHeight()
 
 	if m.loading {
 		b.WriteString("\n  " + m.sp.View() + styleHelp.Render(" Loading notes…") + "\n")
@@ -1284,7 +1278,7 @@ func (m Model) renderSinglePane() string {
 func (m Model) renderTwoPane() string {
 	leftW := m.leftWidth()
 	rightW := m.pvpWidth()
-	paneH := m.height - 4 // header(1) + tab(1) + divider(1) + helpbar(1)
+	paneH := m.listHeight()
 
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
@@ -1294,7 +1288,6 @@ func (m Model) renderTwoPane() string {
 	// search row replaces one line of the pane
 	if m.searching {
 		b.WriteString("  " + m.searchInput.View() + "\n")
-		paneH--
 	}
 
 	// Reserve a 1-column margin on each side of the divider (left pane's
@@ -1451,7 +1444,7 @@ func (m Model) listStartY() int {
 // matching listH (single-pane) / paneH (two-pane) in the render paths.
 func (m Model) listHeight() int {
 	if m.isTwoPane() {
-		h := m.height - 4
+		h := m.height - 3 - helpBarHeight
 		if m.searching {
 			h--
 		}
@@ -1460,7 +1453,7 @@ func (m Model) listHeight() int {
 		}
 		return h
 	}
-	h := m.height - m.listStartY() - 1 // trailing help bar
+	h := m.height - m.listStartY() - helpBarHeight
 	if h < 1 {
 		h = 1
 	}
@@ -1566,6 +1559,12 @@ func (m Model) renderTabBar(w int) string {
 	return bar
 }
 
+// renderHelpBar renders the bottom help area. The key list is split across
+// two lines — it was one long line that overflowed on typical terminal
+// widths, unlike the other suite tools' shorter footers. An error/status
+// message still renders as a single line; helpBarHeight/listHeight below
+// always reserve room for 2 lines regardless, so the list above doesn't
+// shift depending on what's currently showing.
 func (m Model) renderHelpBar(w int) string {
 	right := ""
 	if len(m.notes) > 0 {
@@ -1575,24 +1574,27 @@ func (m Model) renderHelpBar(w int) string {
 		}
 		right = styleHelp.Render(fmt.Sprintf("%d/%d  %s", m.cursor+1, len(m.notes), sortIcon))
 	}
-	var helpBar string
 	if m.err != nil {
-		helpBar = styleErr.Render("✗ " + m.err.Error())
-	} else if m.status != "" {
-		if m.confirmID != "" {
-			helpBar = styleSyncing.Render("⚠ " + m.status)
-		} else {
-			helpBar = styleOK.Render("✓ " + m.status)
-		}
-	} else {
-		helpBar = styleHelp.Render("enter:open  n:new  e:edit  d:delete  y:copy  S:sort  o:editor  s:sync  p:settings  /:search  tab:folder  ?:help  q:quit")
+		return styleErr.Render("✗ " + m.err.Error())
 	}
-	pad := w - lipgloss.Width(helpBar) - lipgloss.Width(right)
+	if m.status != "" {
+		if m.confirmID != "" {
+			return styleSyncing.Render("⚠ " + m.status)
+		}
+		return styleOK.Render("✓ " + m.status)
+	}
+	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  y:copy  S:sort")
+	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:folder  ?:help  q:quit")
+	pad := w - lipgloss.Width(line2) - lipgloss.Width(right)
 	if pad < 0 {
 		pad = 0
 	}
-	return helpBar + strings.Repeat(" ", pad) + right
+	return line1 + "\n" + line2 + strings.Repeat(" ", pad) + right
 }
+
+// helpBarHeight is the line budget reserved below the list for
+// renderHelpBar's output, shared with listHeight so the two can't drift.
+const helpBarHeight = 2
 
 func (m Model) renderDetail() string {
 	if m.detail == nil {
