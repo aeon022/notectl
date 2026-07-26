@@ -139,6 +139,7 @@ type Model struct {
 	notes        []models.Note // filtered (by searchQ) view of allNotes
 	allNotes     []models.Note // everything loaded for the current folder scope
 	cursor       int
+	hoverRow     int // m.notes index under the mouse cursor, -1 when none
 	searchQ      string
 	searching    bool
 	searchInput  textinput.Model
@@ -233,12 +234,13 @@ func New() Model {
 		sortByDate:  true,
 		paneRatio:   0.38,
 		loading:     true,
+		hoverRow:    -1,
 	}
 }
 
 func Run() error {
 	m := New()
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	_, err := p.Run()
 	return err
 }
@@ -451,6 +453,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseButtonLeft:
 			if m.view == viewNew && msg.Action == tea.MouseActionPress {
 				return m.handleEditorClick(msg.X, msg.Y), nil
+			}
+			if m.view != viewList || msg.Action != tea.MouseActionPress {
+				return m, nil
+			}
+			if i := m.tabHitTest(msg.X, msg.Y); i >= 0 {
+				if i != m.activeTab {
+					m.activeTab = i
+					m.cursor = 0
+					return m, loadNotesCmd(m.activeFolder())
+				}
+				return m, nil
+			}
+			if i := m.rowHitTest(msg.X, msg.Y); i >= 0 {
+				m.cursor = i
+				var cmd tea.Cmd
+				m, cmd = m.refreshPreview()
+				return m, cmd
+			}
+		case tea.MouseButtonNone:
+			if msg.Action == tea.MouseActionMotion && m.view == viewList {
+				m.hoverRow = m.rowHitTest(msg.X, msg.Y)
 			}
 		}
 
@@ -1333,7 +1356,17 @@ func (m Model) renderTwoPane() string {
 
 // buildListLines pre-renders list rows with optional date group headers and preview lines.
 func (m Model) buildListLines(w int, withPreview bool) ([]string, int) {
+	lines, cursorLine, _ := m.buildListLinesWithMapping(w, withPreview)
+	return lines, cursorLine
+}
+
+// buildListLinesWithMapping is buildListLines plus a parallel lineToNote
+// slice (note index for a main-row or preview line, -1 for a group-header
+// or blank-separator line), so rowHitTest can map a clicked screen line
+// back to a note without re-deriving this layout itself.
+func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int, []int) {
 	var lines []string
+	var lineToNote []int
 	cursorLine := 0
 	lastGroup := ""
 
@@ -1346,8 +1379,10 @@ func (m Model) buildListLines(w int, withPreview bool) ([]string, int) {
 			if g != lastGroup {
 				if len(lines) > 0 {
 					lines = append(lines, "") // blank separator
+					lineToNote = append(lineToNote, -1)
 				}
 				lines = append(lines, renderGroupHeader(g, w))
+				lineToNote = append(lineToNote, -1)
 				lastGroup = g
 			}
 		}
@@ -1356,10 +1391,14 @@ func (m Model) buildListLines(w int, withPreview bool) ([]string, int) {
 			cursorLine = len(lines)
 		}
 		rowStyle := lipgloss.NewStyle()
-		if i == m.cursor {
+		switch {
+		case i == m.cursor:
 			rowStyle = styleSelected
+		case i == m.hoverRow:
+			rowStyle = theme.Hover
 		}
 		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ))
+		lineToNote = append(lineToNote, i)
 
 		if withPreview && n.Body != "" {
 			preview := firstBodyLine(n.Body)
@@ -1369,16 +1408,126 @@ func (m Model) buildListLines(w int, withPreview bool) ([]string, int) {
 					preview = runewidth.Truncate(preview, avail, "…")
 				}
 				pLine := strings.Repeat(" ", 16) + preview
-				if i == m.cursor {
+				switch {
+				case i == m.cursor:
 					pLine = styleSelected.Width(w).Render(pLine)
-				} else {
+				case i == m.hoverRow:
+					pLine = theme.Hover.Width(w).Render(pLine)
+				default:
 					pLine = styleMuted.Render(pLine)
 				}
 				lines = append(lines, pLine)
+				lineToNote = append(lineToNote, i)
 			}
 		}
 	}
-	return lines, cursorLine
+	return lines, cursorLine, lineToNote
+}
+
+// listStartY returns the number of preamble lines above the note list —
+// header, tab bar, divider, and (mode-dependent) an optional search
+// input/filter chip — shared by the render paths and rowHitTest so they
+// can't drift apart. Two-pane's search row costs 1 line (no trailing
+// blank, no separate filter chip line); single-pane's costs 2 plus an
+// optional filter chip line.
+func (m Model) listStartY() int {
+	y := 3 // header + tab bar + divider
+	if m.isTwoPane() {
+		if m.searching {
+			y++
+		}
+		return y
+	}
+	if m.searching {
+		y += 2
+	}
+	if m.searchQ != "" {
+		y++
+	}
+	return y
+}
+
+// listHeight returns the available line budget for the note list itself,
+// matching listH (single-pane) / paneH (two-pane) in the render paths.
+func (m Model) listHeight() int {
+	if m.isTwoPane() {
+		h := m.height - 4
+		if m.searching {
+			h--
+		}
+		if h < 1 {
+			h = 1
+		}
+		return h
+	}
+	h := m.height - m.listStartY() - 1 // trailing help bar
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+// tabHitTest returns the folder-tab index at column x on the tab bar row
+// (row 1: header is row 0), or -1 if the click didn't land on a tab.
+func (m Model) tabHitTest(x, y int) int {
+	if y != 1 {
+		return -1
+	}
+	tabs := append([]string{"All"}, m.folders...)
+	col := 1 // renderTabBar's line is written with a leading " "
+	for i, t := range tabs {
+		label := t
+		folderKey := t
+		if i == 0 {
+			folderKey = ""
+		}
+		if c := m.folderCounts[folderKey]; c > 0 {
+			label = fmt.Sprintf("%s %d", t, c)
+		}
+		w := lipgloss.Width(styleTabInact.Render(label))
+		if i == m.activeTab {
+			w = lipgloss.Width(styleTabActive.Render(label))
+		}
+		if x >= col && x < col+w {
+			return i
+		}
+		col += w + 2 // "  " join separator
+	}
+	return -1
+}
+
+// rowHitTest returns the m.notes index at screen position (x, y), or -1
+// if the click missed. Mirrors buildListLinesWithMapping's line layout,
+// listStartY/listHeight's preamble+budget accounting, and each render
+// mode's scroll window (start := cursorLine - listHeight + 1) so a click
+// lands on the note it visually appears to be over. In two-pane mode, x
+// must land inside the left (list) pane, not the preview pane.
+func (m Model) rowHitTest(x, y int) int {
+	if m.isTwoPane() && x >= m.leftWidth() {
+		return -1
+	}
+	idx := y - m.listStartY()
+	if idx < 0 || len(m.notes) == 0 {
+		return -1
+	}
+	w := m.width
+	withPreview := true
+	if m.isTwoPane() {
+		const pad = 1
+		w = max(1, m.leftWidth()-pad*2)
+		withPreview = false
+	}
+	_, cursorLine, lineToNote := m.buildListLinesWithMapping(w, withPreview)
+	listH := m.listHeight()
+	start := 0
+	if cursorLine >= listH {
+		start = cursorLine - listH + 1
+	}
+	lineIdx := start + idx
+	if lineIdx >= len(lineToNote) {
+		return -1
+	}
+	return lineToNote[lineIdx]
 }
 
 func (m Model) renderAppHeader(w int) string {
