@@ -3,7 +3,7 @@ module github.com/aeon022/notectl
 go 1.26.5
 
 require (
-	github.com/aeon022/missionctl-core v0.0.0-20260726074204-fb30297a9593
+	github.com/aeon022/missionctl-core v0.0.0-20260801190224-1bc10a8739e8
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -55,6 +55,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	modernc.org/libc v1.73.4 // indirect

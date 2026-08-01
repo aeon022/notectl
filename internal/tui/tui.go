@@ -67,7 +67,7 @@ var (
 	styleSyncing = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"})
 
 	styleTabActive = lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color("15")).
+			Foreground(theme.OnAccent).
 			Background(colorBlue).
 			Padding(0, 3)
 	styleTabInact = lipgloss.NewStyle().
