@@ -6,6 +6,8 @@ github.com/aeon022/missionctl-core v0.0.0-20260801195357-209b81f4515e h1:yG21J9V
 github.com/aeon022/missionctl-core v0.0.0-20260801195357-209b81f4515e/go.mod h1:B2bpgsc9M00IFQ3j0IWABpiPPmSa1oDcxKtczQFMhEA=
 github.com/aeon022/missionctl-core v0.0.0-20260801200414-fd430ece810b h1:Bde2r3bBTlilus33yoQGa+EUk8VC7WqDx/vaBt2yk9g=
 github.com/aeon022/missionctl-core v0.0.0-20260801200414-fd430ece810b/go.mod h1:B2bpgsc9M00IFQ3j0IWABpiPPmSa1oDcxKtczQFMhEA=
+github.com/aeon022/missionctl-core v0.0.0-20260801204118-4785531e86ae h1:CKLCO3Pj1JdOKJestErNosulCgeA241NCDYiz/nRAao=
+github.com/aeon022/missionctl-core v0.0.0-20260801204118-4785531e86ae/go.mod h1:B2bpgsc9M00IFQ3j0IWABpiPPmSa1oDcxKtczQFMhEA=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
 github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
