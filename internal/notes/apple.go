@@ -87,8 +87,16 @@ end tell
 // Notes derives the displayed title from the body's first line, and directly
 // setting the `name` property was found (via live testing) to desync from
 // the rendered title rather than rename it, so it's deliberately left alone
-// on update. If id is empty, a new note is created and its freshly assigned
-// id is returned so the caller can persist it for future updates.
+// on update (callers are expected to already have the title as htmlBody's
+// first line for updates, same as the rest of the note's content). If id
+// is empty, a new note is created and its freshly assigned id is returned
+// so the caller can persist it for future updates; on create, the title is
+// prefixed onto htmlBody as its own line here — Apple Notes derives the
+// displayed title from the body's first line the same way on create as on
+// update, and a body that doesn't already start with the title produced a
+// note whose title ended up duplicated into its own content (confirmed via
+// live testing). Prefixing internally means callers just pass their real
+// body; they don't need to know about this quirk.
 func WriteApple(id, title, htmlBody, folder string) (string, error) {
 	if id != "" {
 		updateScript := fmt.Sprintf(`
@@ -106,12 +114,13 @@ end tell
 	if folder != "" {
 		target = fmt.Sprintf(`folder "%s"`, escapeAS(folder))
 	}
+	fullBody := "<div>" + htmlEscape(title) + "</div><div><br></div>" + htmlBody
 	createScript := fmt.Sprintf(`
 tell application "Notes"
-	set newNote to make new note at %s with properties {name:"%s", body:"%s"}
+	set newNote to make new note at %s with properties {body:"%s"}
 	return id of newNote
 end tell
-`, target, escapeAS(title), escapeAS(htmlBody))
+`, target, escapeAS(fullBody))
 	out, err := runAppleScript(createScript)
 	if err != nil {
 		return "", err
@@ -246,19 +255,24 @@ func TextToHTML(body string) string {
 		case strings.HasPrefix(t, "* "):
 			bulletItem(strings.TrimPrefix(t, "* "))
 		case strings.HasPrefix(t, "# "):
-			closeChecklist(); closeList()
+			closeChecklist()
+			closeList()
 			sb.WriteString("<h1>" + mdInlineToHTML(t[2:]) + "</h1>")
 		case strings.HasPrefix(t, "## "):
-			closeChecklist(); closeList()
+			closeChecklist()
+			closeList()
 			sb.WriteString("<h2>" + mdInlineToHTML(t[3:]) + "</h2>")
 		case strings.HasPrefix(t, "### "):
-			closeChecklist(); closeList()
+			closeChecklist()
+			closeList()
 			sb.WriteString("<h3>" + mdInlineToHTML(t[4:]) + "</h3>")
 		case t == "":
-			closeChecklist(); closeList()
+			closeChecklist()
+			closeList()
 			sb.WriteString("<div><br></div>")
 		default:
-			closeChecklist(); closeList()
+			closeChecklist()
+			closeList()
 			sb.WriteString("<div>" + mdInlineToHTML(line) + "</div>")
 		}
 	}
@@ -343,9 +357,9 @@ func StripHTML(s string) string {
 	var out strings.Builder
 	var tagBuf strings.Builder
 	inTag := false
-	lastNL := true        // treat start as newline so first line doesn't get a blank line
-	inChecklist := false  // inside <ul class="Apple-checked-list">
-	pendingBullet := ""   // bullet to emit before next text character
+	lastNL := true          // treat start as newline so first line doesn't get a blank line
+	inChecklist := false    // inside <ul class="Apple-checked-list">
+	pendingBullet := ""     // bullet to emit before next text character
 	headingRunOpen := false // true while inside a heading "line" that may be split
 	// across several sibling <hN> runs (Apple Notes exports title text as
 	// separate <h1>/<h2> runs per formatting change, e.g. one run for a

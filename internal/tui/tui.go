@@ -725,12 +725,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.cursor >= len(m.notes) {
 				m.cursor = max(0, len(m.notes)-1)
 			}
-			if config.Source() == config.SourceApple {
-				m.setStatus("Deleted: " + n.Title)
-			} else {
-				m.lastDeleted = &n
-				m.setStatus("Deleted: " + n.Title + " — press u to undo")
-			}
+			m.lastDeleted = &n
+			m.setStatus("Deleted: " + n.Title + " — press u to undo")
 			ref := n.Path
 			if config.Source() == config.SourceApple {
 				ref = n.ID
@@ -882,12 +878,8 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailLineCursor = 0
 			m.detailYOffset = 0
 			m.view = viewList
-			if config.Source() == config.SourceApple {
-				m.setStatus("Deleted: " + title)
-			} else {
-				m.lastDeleted = &n
-				m.setStatus("Deleted: " + title + " — press u to undo")
-			}
+			m.lastDeleted = &n
+			m.setStatus("Deleted: " + title + " — press u to undo")
 			return m, deleteNoteCmd(id, path)
 		}
 
@@ -2374,22 +2366,33 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 }
 
 // undoDeleteNoteCmd re-creates a deleted note — used by "u" within
-// undoWindow of a delete. Obsidian-vault notes only: notes.Write is a
-// direct markdown file write, a clean round-trip. Apple Notes deliberately
-// NOT supported here — verified live that WriteApple's title/body
-// interaction doesn't round-trip cleanly (Apple Notes derives the visible
-// title from the body's first line, so recreating with the original body
-// unchanged produced a note with the title duplicated into its own body),
-// and a delete+undo cycle left 2 real notes in the Notes app instead of 1.
-// Recreating a lossy/duplicated note would be worse than no undo at all.
+// undoWindow of a delete. Recreates in the real source (vault file or
+// Apple Notes) plus the local cache; the restored note gets a fresh ID
+// since both backends assign their own identifier on create (same
+// tradeoff taskctl/calctl already accept for their own delete-undo).
+// Apple Notes bodies are cached as plain text (converted on read via
+// BlocksToPlain); TextToHTML is the same conversion ReconcileBlocks
+// already uses elsewhere, and WriteApple now prefixes the title onto the
+// body itself on create, so this is a clean round-trip.
 func undoDeleteNoteCmd(n models.Note) tea.Cmd {
 	return func() tea.Msg {
+		var restored *models.Note
+		var err error
 		if config.Source() == config.SourceApple {
-			return noteRestoredMsg{err: fmt.Errorf("undo isn't supported for Apple Notes yet")}
-		}
-		restored, err := notes.Write(config.VaultPath(), n.Title, n.Body, n.Tags, n.Folder)
-		if err != nil {
-			return noteRestoredMsg{err: err}
+			id, werr := notes.WriteApple("", n.Title, notes.TextToHTML(n.Body), n.Folder)
+			if werr != nil {
+				return noteRestoredMsg{err: werr}
+			}
+			restored = &models.Note{
+				ID: id, Title: n.Title, Body: n.Body,
+				Folder: n.Folder, Source: "apple",
+				ModTime: time.Now(), Created: time.Now(),
+			}
+		} else {
+			restored, err = notes.Write(config.VaultPath(), n.Title, n.Body, n.Tags, n.Folder)
+			if err != nil {
+				return noteRestoredMsg{err: err}
+			}
 		}
 		s, err := store.New(config.DBPath())
 		if err != nil {
@@ -2433,11 +2436,18 @@ func writeNoteCmd(id, title, body, tagsStr, folder string, editBlocks []notes.Bl
 		var err error
 
 		if config.Source() == config.SourceApple {
-			fullBody := title
-			if body != "" {
-				fullBody = title + "\n\n" + body
+			plainBody := body
+			if id != "" {
+				// Update path: WriteApple only touches body, and Apple
+				// Notes derives the title from body's first line — the
+				// caller has to keep that line current itself. (Create
+				// does this internally now; see WriteApple's doc comment.)
+				plainBody = title
+				if body != "" {
+					plainBody = title + "\n\n" + body
+				}
 			}
-			htmlBody := notes.ReconcileBlocks(editBlocks, fullBody)
+			htmlBody := notes.ReconcileBlocks(editBlocks, plainBody)
 			var newID string
 			newID, err = notes.WriteApple(id, title, htmlBody, folder)
 			if err != nil {
