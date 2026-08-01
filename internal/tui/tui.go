@@ -153,6 +153,11 @@ type Model struct {
 	activeTab    int // 0 = All, 1+ = folder
 	folderCounts map[string]int
 
+	// openPath, when set (via `notectl --open <relpath>`, e.g. jumping in
+	// from diaryctl's linked entry), opens that note's detail view as soon
+	// as notes finish loading, then clears itself so it only fires once.
+	openPath string
+
 	// detail / preview
 	detail           *models.Note
 	detailLineCursor int           // current line in detail body (for j/k + checkbox toggle)
@@ -198,7 +203,7 @@ type Model struct {
 	helpPopH int
 }
 
-func New() Model {
+func New(openPath string) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
 	sp.Style = styleSyncing
@@ -247,11 +252,12 @@ func New() Model {
 		loading:      true,
 		hoverRow:     -1,
 		lastClickRow: -1,
+		openPath:     openPath,
 	}
 }
 
-func Run() error {
-	m := New()
+func Run(openPath string) error {
+	m := New(openPath)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	_, err := p.Run()
 	return err
@@ -328,6 +334,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = i
 					found = true
 					break
+				}
+			}
+		}
+		if m.openPath != "" {
+			// notesLoadedMsg fires once immediately (pre-sync, possibly
+			// before the note exists in the DB yet) and again after
+			// syncDoneMsg reloads — only clear openPath on an actual match
+			// so the post-sync pass still gets a chance to find it.
+			for _, n := range m.allNotes {
+				if n.Path == m.openPath {
+					var cmd tea.Cmd
+					m, cmd = m.openNoteDetail(n)
+					m.openPath = ""
+					return m, cmd
 				}
 			}
 		}
@@ -571,6 +591,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp, cmd = m.vp.Update(msg)
 		return m, cmd
 	}
+	return m, nil
+}
+
+// openNoteDetail switches to the detail view for n, matching the "enter"
+// key's behavior — used by the --open startup flow (jumping in from a
+// linked entry in another tool) which has no keypress to hook.
+func (m Model) openNoteDetail(n models.Note) (Model, tea.Cmd) {
+	m.detail = &n
+	m.detailBlocks = nil
+	m.detailLineCursor = 0
+	m.detailYOffset = 0
+	m.vp.GotoTop()
+	m.view = viewDetail
+	if config.Source() == config.SourceApple {
+		m.vp.SetContent(styleMuted.Render("Loading…"))
+		return m, loadAppleBodyCmd(n.ID)
+	}
+	content, _ := renderDetailBody(n.Body, 0, m.detailBodyWidth())
+	m.vp.SetContent(content)
 	return m, nil
 }
 

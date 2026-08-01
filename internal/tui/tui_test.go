@@ -299,7 +299,7 @@ func TestFilterNotes_EmptyQueryReturnsAllUnfiltered(t *testing.T) {
 }
 
 func TestSearchMode_FiltersLiveAsUserTypes(t *testing.T) {
-	m := New()
+	m := New("")
 	m.width, m.height = 100, 30
 	notes := []models.Note{
 		{ID: "1", Title: "budgetctl release", ModTime: time.Now()},

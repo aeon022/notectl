@@ -3,7 +3,7 @@ package tui
 import "testing"
 
 func editorModel(body string, w, h int) Model {
-	m := New()
+	m := New("")
 	m.width = 90 // single-pane
 	m.height = h + 11
 	m.bodyArea.SetWidth(w)
