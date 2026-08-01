@@ -85,6 +85,15 @@ func LastSyncedPath() string {
 	return filepath.Join(dir, "last_synced")
 }
 
+// UIStatePath is where the TUI persists small preferences (last active
+// folder tab) — see missionctl-core/uistate.
+func UIStatePath() string {
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".local", "share", "notectl")
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, "ui_state.json")
+}
+
 func AppleFolder() string {
 	return viper.GetString("apple_folder") // optional: Apple Notes folder to sync
 }

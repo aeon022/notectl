@@ -13,6 +13,7 @@ import (
 	"github.com/aeon022/missionctl-core/lastsync"
 	"github.com/aeon022/missionctl-core/overlay"
 	"github.com/aeon022/missionctl-core/theme"
+	"github.com/aeon022/missionctl-core/uistate"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
@@ -155,6 +156,11 @@ type Model struct {
 	activeTab    int // 0 = All, 1+ = folder
 	folderCounts map[string]int
 
+	// pendingFolderRestore holds the persisted last-active folder name
+	// (see uistate) until m.folders first loads, resolved to an index and
+	// cleared then — same one-shot pattern as openPath below.
+	pendingFolderRestore string
+
 	// openPath, when set (via `notectl --open <relpath>`, e.g. jumping in
 	// from diaryctl's linked entry), opens that note's detail view as soon
 	// as notes finish loading, then clears itself so it only fires once.
@@ -242,21 +248,35 @@ func New(openPath string) Model {
 		}
 	}
 
+	var state persistedState
+	uistate.Load(config.UIStatePath(), &state)
+
 	return Model{
-		sp:           sp,
-		searchInput:  si,
-		titleInput:   ti,
-		tagsInput:    tags,
-		bodyArea:     body,
-		vaultInput:   vi,
-		sourceIdx:    srcIdx,
-		sortByDate:   true,
-		paneRatio:    0.38,
-		loading:      true,
-		hoverRow:     -1,
-		lastClickRow: -1,
-		openPath:     openPath,
+		sp:                   sp,
+		searchInput:          si,
+		titleInput:           ti,
+		tagsInput:            tags,
+		bodyArea:             body,
+		vaultInput:           vi,
+		sourceIdx:            srcIdx,
+		sortByDate:           true,
+		paneRatio:            0.38,
+		loading:              true,
+		hoverRow:             -1,
+		lastClickRow:         -1,
+		openPath:             openPath,
+		pendingFolderRestore: state.LastFolder,
 	}
+}
+
+// persistedState is what New() restores from and saveUIState saves to — see
+// missionctl-core/uistate.
+type persistedState struct {
+	LastFolder string `json:"last_folder"`
+}
+
+func (m Model) saveUIState() {
+	_ = uistate.Save(config.UIStatePath(), persistedState{LastFolder: m.activeFolder()})
 }
 
 func Run(openPath string) error {
@@ -337,6 +357,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.folders = msg.folders
 		if msg.folderCounts != nil {
 			m.folderCounts = msg.folderCounts
+		}
+		if m.pendingFolderRestore != "" {
+			restore := m.pendingFolderRestore
+			m.pendingFolderRestore = ""
+			for i, f := range m.folders {
+				if f == restore {
+					m.activeTab = i + 1
+					return m, loadNotesCmd(restore)
+				}
+			}
 		}
 		// Try to restore cursor to the same note by ID.
 		found := false
@@ -522,6 +552,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if i != m.activeTab {
 					m.activeTab = i
 					m.cursor = 0
+					m.saveUIState()
 					return m, loadNotesCmd(m.activeFolder())
 				}
 				return m, nil
@@ -673,11 +704,13 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		tabs := len(m.folders) + 1
 		m.activeTab = (m.activeTab + 1) % tabs
 		m.cursor = 0
+		m.saveUIState()
 		return m, loadNotesCmd(m.activeFolder())
 	case "shift+tab":
 		tabs := len(m.folders) + 1
 		m.activeTab = (m.activeTab - 1 + tabs) % tabs
 		m.cursor = 0
+		m.saveUIState()
 		return m, loadNotesCmd(m.activeFolder())
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		// jump to the nth visible (on-screen) note, date-group headers not
