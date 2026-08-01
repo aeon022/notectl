@@ -570,6 +570,35 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activeTab = (m.activeTab - 1 + tabs) % tabs
 		m.cursor = 0
 		return m, loadNotesCmd(m.activeFolder())
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// jump to the nth visible (on-screen) note, date-group headers not
+		// counted — mirrors rowHitTest's own scroll-window math so a digit
+		// lands on the same note a click at that position would.
+		n := int(msg.String()[0] - '0')
+		w := m.width
+		withPreview := true
+		if m.isTwoPane() {
+			const pad = 1
+			w = max(1, m.leftWidth()-pad*2)
+			withPreview = false
+		}
+		_, cursorLine, lineToNote := m.buildListLinesWithMapping(w, withPreview)
+		listH := m.listHeight()
+		start := 0
+		if cursorLine >= listH {
+			start = cursorLine - listH + 1
+		}
+		count := 0
+		for _, noteIdx := range lineToNote[start:] {
+			if noteIdx < 0 {
+				continue
+			}
+			count++
+			if count == n {
+				m.cursor = noteIdx
+				break
+			}
+		}
 	case "j", "down":
 		if m.cursor < len(m.notes)-1 {
 			m.cursor++
