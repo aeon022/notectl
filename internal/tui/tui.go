@@ -110,6 +110,10 @@ type notesLoadedMsg struct {
 	folders      []string
 	folderCounts map[string]int
 }
+type noteRestoredMsg struct {
+	note *models.Note
+	err  error
+}
 type syncDoneMsg struct {
 	count int
 	err   error
@@ -174,6 +178,11 @@ type Model struct {
 	sortByDate bool    // true = mod_time desc (default), false = title asc
 	paneRatio  float64 // two-pane left width ratio (default 0.38)
 	confirmID  string  // non-empty = waiting for delete confirmation
+
+	// undo: "u" within undoWindow of a delete restores the deleted note —
+	// same pattern and window taskctl uses for its own delete-undo.
+	// statusTime doubles as its expiry clock (see the tea.KeyMsg case).
+	lastDeleted *models.Note
 
 	// status
 	status     string
@@ -352,6 +361,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadNotesCmd(m.activeFolder())
 		}
 
+	case noteRestoredMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			name := ""
+			if msg.note != nil {
+				name = msg.note.Title
+			}
+			m.setStatus("Restored: " + name)
+			return m, loadNotesCmd(m.activeFolder())
+		}
+
 	case deletedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -511,8 +532,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.err = nil
-		if time.Since(m.statusTime) > 3*time.Second {
+		// The delete-undo toast gets the longer undoWindow instead of the
+		// usual 3s — it's also the window "u" checks below, so the message
+		// and the capability it describes expire together.
+		clearAfter := 3 * time.Second
+		if m.lastDeleted != nil {
+			clearAfter = undoWindow
+		}
+		if time.Since(m.statusTime) > clearAfter {
 			m.status = ""
+			m.lastDeleted = nil
 		}
 		switch m.view {
 		case viewList:
@@ -696,12 +725,24 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.cursor >= len(m.notes) {
 				m.cursor = max(0, len(m.notes)-1)
 			}
-			m.setStatus("Deleted: " + n.Title)
+			if config.Source() == config.SourceApple {
+				m.setStatus("Deleted: " + n.Title)
+			} else {
+				m.lastDeleted = &n
+				m.setStatus("Deleted: " + n.Title + " — press u to undo")
+			}
 			ref := n.Path
 			if config.Source() == config.SourceApple {
 				ref = n.ID
 			}
 			return m, deleteNoteCmd(n.ID, ref)
+		}
+	case "u":
+		if m.lastDeleted != nil {
+			n := m.lastDeleted
+			m.lastDeleted = nil
+			m.status = ""
+			return m, undoDeleteNoteCmd(*n)
 		}
 	case "S":
 		m.sortByDate = !m.sortByDate
@@ -813,11 +854,21 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "d":
 		if m.detail != nil {
+			// Detail view had no confirm step at all before — a stray "d"
+			// while reading a note deleted it immediately, unlike the list
+			// view's same key which requires a second press. Now matches.
+			if m.confirmID != m.detail.ID {
+				m.confirmID = m.detail.ID
+				m.setStatus(fmt.Sprintf("Delete \"%s\"?  d:confirm  esc:cancel", runeLimit(m.detail.Title, 30)))
+				return m, nil
+			}
+			m.confirmID = ""
 			ref := m.detail.Path
 			if config.Source() == config.SourceApple {
 				ref = m.detail.ID
 			}
-			id, path, title := m.detail.ID, ref, m.detail.Title
+			n := *m.detail
+			id, path, title := n.ID, ref, n.Title
 			for i := range m.notes {
 				if m.notes[i].ID == id {
 					m.notes = append(m.notes[:i], m.notes[i+1:]...)
@@ -831,7 +882,12 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detailLineCursor = 0
 			m.detailYOffset = 0
 			m.view = viewList
-			m.setStatus("Deleted: " + title)
+			if config.Source() == config.SourceApple {
+				m.setStatus("Deleted: " + title)
+			} else {
+				m.lastDeleted = &n
+				m.setStatus("Deleted: " + title + " — press u to undo")
+			}
 			return m, deleteNoteCmd(id, path)
 		}
 
@@ -1636,7 +1692,7 @@ func (m Model) renderHelpBar(w int) string {
 		}
 		return styleOK.Render("✓ " + m.status)
 	}
-	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  y:copy  S:sort")
+	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  u:undo  y:copy  S:sort")
 	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:folder  ?:help  q:quit")
 	pad := w - lipgloss.Width(line2) - lipgloss.Width(right)
 	if pad < 0 {
@@ -1652,6 +1708,10 @@ const helpBarHeight = 2
 // doubleClickWindow opens the note detail on a second click within this
 // window, same pattern and duration taskctl uses for its own double-click.
 const doubleClickWindow = 400 * time.Millisecond
+
+// undoWindow is how long after a delete "u" still restores it — same
+// duration taskctl uses for its own delete-undo.
+const undoWindow = 5 * time.Second
 
 func (m Model) renderDetail() string {
 	if m.detail == nil {
@@ -2310,6 +2370,34 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 			_ = notes.Delete(config.VaultPath(), relPath)
 		}
 		return deletedMsg{}
+	}
+}
+
+// undoDeleteNoteCmd re-creates a deleted note — used by "u" within
+// undoWindow of a delete. Obsidian-vault notes only: notes.Write is a
+// direct markdown file write, a clean round-trip. Apple Notes deliberately
+// NOT supported here — verified live that WriteApple's title/body
+// interaction doesn't round-trip cleanly (Apple Notes derives the visible
+// title from the body's first line, so recreating with the original body
+// unchanged produced a note with the title duplicated into its own body),
+// and a delete+undo cycle left 2 real notes in the Notes app instead of 1.
+// Recreating a lossy/duplicated note would be worse than no undo at all.
+func undoDeleteNoteCmd(n models.Note) tea.Cmd {
+	return func() tea.Msg {
+		if config.Source() == config.SourceApple {
+			return noteRestoredMsg{err: fmt.Errorf("undo isn't supported for Apple Notes yet")}
+		}
+		restored, err := notes.Write(config.VaultPath(), n.Title, n.Body, n.Tags, n.Folder)
+		if err != nil {
+			return noteRestoredMsg{err: err}
+		}
+		s, err := store.New(config.DBPath())
+		if err != nil {
+			return noteRestoredMsg{err: err}
+		}
+		defer s.Close()
+		_ = s.Upsert(context.Background(), restored)
+		return noteRestoredMsg{note: restored}
 	}
 }
 
