@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aeon022/missionctl-core/humanize"
+	"github.com/aeon022/missionctl-core/lastsync"
 	"github.com/aeon022/missionctl-core/overlay"
 	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/notectl/internal/config"
@@ -194,6 +196,7 @@ type Model struct {
 	statusTime time.Time
 	err        error
 	syncing    bool
+	lastSynced time.Time // zero = never synced this install
 	sp         spinner.Model
 	loading    bool
 
@@ -264,7 +267,16 @@ func Run(openPath string) error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadNotesCmd(""), doSyncCmd(), tea.WindowSize(), m.sp.Tick)
+	return tea.Batch(loadNotesCmd(""), doSyncCmd(), tea.WindowSize(), m.sp.Tick, loadLastSyncedCmd())
+}
+
+type lastSyncedLoadedMsg struct{ t time.Time }
+
+func loadLastSyncedCmd() tea.Cmd {
+	return func() tea.Msg {
+		t, _ := lastsync.Load(config.LastSyncedPath())
+		return lastSyncedLoadedMsg{t: t}
+	}
 }
 
 func (m Model) activeFolder() string {
@@ -359,12 +371,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, pvCmd = m.refreshPreview()
 		return m, pvCmd
 
+	case lastSyncedLoadedMsg:
+		m.lastSynced = msg.t
+
 	case syncDoneMsg:
 		m.syncing = false
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
 			m.setStatus(fmt.Sprintf("Synced %d notes", msg.count))
+			m.lastSynced = time.Now()
+			_ = lastsync.Save(config.LastSyncedPath(), m.lastSynced)
 			return m, loadNotesCmd(m.activeFolder())
 		}
 
@@ -1694,6 +1711,8 @@ func (m Model) renderTabBar(w int) string {
 	bar := strings.Join(parts, "  ")
 	if m.syncing {
 		bar += "  " + m.sp.View() + styleSyncing.Render(" syncing…")
+	} else if !m.lastSynced.IsZero() {
+		bar += "  " + styleMuted.Render("synced "+humanize.TimeAgo(m.lastSynced))
 	}
 	_ = w
 	return bar
