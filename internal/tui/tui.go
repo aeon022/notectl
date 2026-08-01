@@ -140,6 +140,8 @@ type Model struct {
 	allNotes     []models.Note // everything loaded for the current folder scope
 	cursor       int
 	hoverRow     int // m.notes index under the mouse cursor, -1 when none
+	lastClickRow int // m.notes index of the previous left-click, -1 when none — double-click opens the note detail, same window/pattern taskctl uses
+	lastClickAt  time.Time
 	searchQ      string
 	searching    bool
 	searchInput  textinput.Model
@@ -224,17 +226,18 @@ func New() Model {
 	}
 
 	return Model{
-		sp:          sp,
-		searchInput: si,
-		titleInput:  ti,
-		tagsInput:   tags,
-		bodyArea:    body,
-		vaultInput:  vi,
-		sourceIdx:   srcIdx,
-		sortByDate:  true,
-		paneRatio:   0.38,
-		loading:     true,
-		hoverRow:    -1,
+		sp:           sp,
+		searchInput:  si,
+		titleInput:   ti,
+		tagsInput:    tags,
+		bodyArea:     body,
+		vaultInput:   vi,
+		sourceIdx:    srcIdx,
+		sortByDate:   true,
+		paneRatio:    0.38,
+		loading:      true,
+		hoverRow:     -1,
+		lastClickRow: -1,
 	}
 }
 
@@ -466,7 +469,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if i := m.rowHitTest(msg.X, msg.Y); i >= 0 {
+				now := time.Now()
+				if i == m.lastClickRow && now.Sub(m.lastClickAt) < doubleClickWindow {
+					m.cursor = i
+					m.lastClickRow = -1 // consumed, so a third click starts fresh
+					n := m.notes[i]
+					m.detail = &n
+					m.detailBlocks = nil
+					m.detailLineCursor = 0
+					m.detailYOffset = 0
+					m.vp.GotoTop()
+					m.view = viewDetail
+					if config.Source() == config.SourceApple {
+						m.vp.SetContent(styleMuted.Render("Loading…"))
+						return m, loadAppleBodyCmd(n.ID)
+					}
+					content, _ := renderDetailBody(n.Body, 0, m.detailBodyWidth())
+					m.vp.SetContent(content)
+					return m, nil
+				}
 				m.cursor = i
+				m.lastClickRow = i
+				m.lastClickAt = now
 				var cmd tea.Cmd
 				m, cmd = m.refreshPreview()
 				return m, cmd
@@ -1624,6 +1648,10 @@ func (m Model) renderHelpBar(w int) string {
 // helpBarHeight is the line budget reserved below the list for
 // renderHelpBar's output, shared with listHeight so the two can't drift.
 const helpBarHeight = 2
+
+// doubleClickWindow opens the note detail on a second click within this
+// window, same pattern and duration taskctl uses for its own double-click.
+const doubleClickWindow = 400 * time.Millisecond
 
 func (m Model) renderDetail() string {
 	if m.detail == nil {
