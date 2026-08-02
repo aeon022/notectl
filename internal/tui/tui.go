@@ -39,6 +39,7 @@ const (
 	viewNew      view = iota
 	viewSettings view = iota
 	viewHelp     view = iota
+	viewTags     view = iota
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -160,6 +161,9 @@ type Model struct {
 	// (see uistate) until m.folders first loads, resolved to an index and
 	// cleared then — same one-shot pattern as openPath below.
 	pendingFolderRestore string
+
+	// tag browser ("t")
+	tagCursor int
 
 	// openPath, when set (via `notectl --open <relpath>`, e.g. jumping in
 	// from diaryctl's linked entry), opens that note's detail view as soon
@@ -631,6 +635,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.helpVP, cmd = m.helpVP.Update(msg)
 			return m, cmd
+		case viewTags:
+			return m.updateTags(msg)
 		}
 	}
 
@@ -865,6 +871,10 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		m.searchInput.Focus()
 		m.searchInput.SetValue("")
+	case "t":
+		m.tagCursor = 0
+		m.view = viewTags
+		return m, nil
 	case "?":
 		m = m.openHelp()
 	case "esc":
@@ -1111,6 +1121,64 @@ func (m Model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// tagCount is one entry in the tag browser: a tag name and how many notes
+// carry it.
+type tagCount struct {
+	name  string
+	count int
+}
+
+// allTags tallies every tag across notes, sorted by count descending then
+// name ascending.
+func allTags(notes []models.Note) []tagCount {
+	counts := map[string]int{}
+	for _, n := range notes {
+		for _, t := range n.Tags {
+			counts[t]++
+		}
+	}
+	out := make([]tagCount, 0, len(counts))
+	for name, c := range counts {
+		out = append(out, tagCount{name: name, count: c})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].count != out[j].count {
+			return out[i].count > out[j].count
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+func (m Model) updateTags(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	tags := allTags(m.allNotes)
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "q", "esc":
+		m.view = viewList
+		return m, nil
+	case "j", "down":
+		if m.tagCursor < len(tags)-1 {
+			m.tagCursor++
+		}
+	case "k", "up":
+		if m.tagCursor > 0 {
+			m.tagCursor--
+		}
+	case "enter":
+		if m.tagCursor < len(tags) {
+			m.searchQ = tags[m.tagCursor].name
+			m.searchInput.SetValue(m.searchQ)
+			m.notes = filterNotes(m.allNotes, m.searchQ)
+			m.cursor = 0
+		}
+		m.view = viewList
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s":
@@ -1344,9 +1412,35 @@ func (m Model) View() string {
 		// the correct background to keep visible behind the popup. No
 		// enclosing border on the list view, so inset 0 is safe.
 		return overlay.Center(m.renderList(), m.renderHelpPopup(), m.width, m.height, 0)
+	case viewTags:
+		return overlay.Center(m.renderList(), m.renderTags(), m.width, m.height, 0)
 	default:
 		return m.renderList()
 	}
+}
+
+func (m Model) renderTags() string {
+	tags := allTags(m.allNotes)
+	var b strings.Builder
+	b.WriteString(styleHeader.Render("Tags") + "\n\n")
+	if len(tags) == 0 {
+		b.WriteString(styleHelp.Render("No tagged notes yet.") + "\n")
+	}
+	for i, t := range tags {
+		row := fmt.Sprintf("#%s  (%d)", t.name, t.count)
+		if i == m.tagCursor {
+			b.WriteString(styleSelected.Render("› "+row) + "\n")
+		} else {
+			b.WriteString("  " + row + "\n")
+		}
+	}
+	b.WriteString("\n" + styleHelp.Render("j/k move  enter filter by tag  esc/q close"))
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorBlue).
+		Padding(1, 2).
+		Width(min(50, m.width-4)).
+		Render(b.String())
 }
 
 func (m Model) helpContent() string {
@@ -1374,6 +1468,7 @@ func (m Model) helpContent() string {
 	b.WriteString(row("p", "settings (vault path, source)"))
 	b.WriteString(row("s", "sync"))
 	b.WriteString(row("/", "search (esc clears)"))
+	b.WriteString(row("t", "browse tags"))
 	b.WriteString(row("?", "toggle this help"))
 	b.WriteString(row("q", "quit"))
 	return b.String()
@@ -1813,7 +1908,15 @@ func (m Model) renderDetail() string {
 	if meta != "" {
 		b.WriteString(detailLeftPad + meta + "\n")
 	}
-	b.WriteString(detailLeftPad + styleMuted.Render(m.detail.ModTime.Format("Mon, 02 Jan 2006 15:04")) + "\n\n")
+	b.WriteString(detailLeftPad + styleMuted.Render(m.detail.ModTime.Format("Mon, 02 Jan 2006 15:04")) + "\n")
+	if backlinks := backlinksFor(*m.detail, m.allNotes); len(backlinks) > 0 {
+		names := make([]string, len(backlinks))
+		for i, n := range backlinks {
+			names[i] = n.Title
+		}
+		b.WriteString(detailLeftPad + styleMuted.Render("Linked from: ") + styleTag.Render(strings.Join(names, ", ")) + "\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 	m.vp.Width = m.detailBodyWidth()
 	m.vp.Height = m.bodyHeight()
@@ -1825,6 +1928,22 @@ func (m Model) renderDetail() string {
 	helpStr := "esc:back  e:edit  d:delete  o:notes  j/k:scroll  space:toggle checkbox  q:quit"
 	b.WriteString("\n\n" + detailLeftPad + styleHelp.Render(helpStr) + styleMuted.Render(pct))
 	return b.String()
+}
+
+// backlinksFor returns every note in all whose body references target via
+// an Obsidian-style [[Title]] wiki-link, excluding target itself.
+func backlinksFor(target models.Note, all []models.Note) []models.Note {
+	needle := "[[" + target.Title + "]]"
+	var out []models.Note
+	for _, n := range all {
+		if n.ID == target.ID {
+			continue
+		}
+		if strings.Contains(n.Body, needle) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func renderScrollbar(vp viewport.Model, leftPad string) string {
