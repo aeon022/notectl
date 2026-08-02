@@ -21,7 +21,7 @@ var readCmd = &cobra.Command{
 		asJSON, _ := cmd.Flags().GetBool("json")
 
 		// try SQLite cache first
-		s, err := store.New(config.DBPath())
+		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return err
 		}

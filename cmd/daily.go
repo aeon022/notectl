@@ -41,7 +41,7 @@ var dailyCmd = &cobra.Command{
 		}
 
 		// update SQLite cache
-		if s, serr := store.New(config.DBPath()); serr == nil {
+		if s, serr := store.New(config.DBPath(), config.Shared()); serr == nil {
 			defer s.Close()
 			_ = s.Upsert(context.Background(), n)
 		}

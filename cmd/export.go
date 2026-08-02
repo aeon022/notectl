@@ -29,7 +29,7 @@ Examples:
   notectl export --format json
   notectl export --folder Recipes --format csv -o recipes.csv`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := store.New(config.DBPath())
+		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return err
 		}

@@ -47,7 +47,7 @@ var writeCmd = &cobra.Command{
 		}
 
 		// update SQLite cache
-		s, serr := store.New(config.DBPath())
+		s, serr := store.New(config.DBPath(), config.Shared())
 		if serr == nil {
 			defer s.Close()
 			_ = s.Upsert(context.Background(), n)

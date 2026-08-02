@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	coreconfig "github.com/aeon022/missionctl-core/config"
 	"github.com/spf13/viper"
 )
 
@@ -66,14 +67,27 @@ func VaultPath() string {
 	return expandHome(VaultPathRaw())
 }
 
+// DBPath returns the database file path: data_dir (viper key, also settable
+// via NOTECTL_DATA_DIR) takes precedence — points it at a user-chosen
+// directory, e.g. inside iCloud Drive or Dropbox, resolved via
+// coreconfig.ResolveDir — then the legacy db_path (a full file path), then
+// the private default (~/.local/share/notectl).
 func DBPath() string {
+	if dir := viper.GetString("data_dir"); dir != "" {
+		resolved, _ := coreconfig.ResolveDir("notectl", dir)
+		return filepath.Join(resolved, "notes.db")
+	}
 	if p := viper.GetString("db_path"); p != "" {
 		return expandHome(p)
 	}
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".local", "share", "notectl")
-	_ = os.MkdirAll(dir, 0o755)
+	dir, _ := coreconfig.ResolveDir("notectl", "")
 	return filepath.Join(dir, "notes.db")
+}
+
+// Shared reports whether DBPath currently resolves to a user-configured
+// directory (data_dir) rather than the tool's private default.
+func Shared() bool {
+	return viper.GetString("data_dir") != ""
 }
 
 // LastSyncedPath is the marker file (see missionctl-core/lastsync) tracking

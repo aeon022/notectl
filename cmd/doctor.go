@@ -14,6 +14,7 @@ var doctorCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		checks := []doctor.Check{
 			doctor.CheckSQLite("Database", config.DBPath(), "notes"),
+			doctor.CheckDataDir("Data directory", config.DBPath(), config.Shared()),
 		}
 		if config.Source() == config.SourceApple {
 			checks = append(checks, doctor.CheckAppleApp("Notes.app", "Notes"))

@@ -28,7 +28,7 @@ func setupTest(t *testing.T) string {
 		viper.Set("vault_path", "")
 	})
 
-	s, err := store.New(dbPath)
+	s, err := store.New(dbPath, false)
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}

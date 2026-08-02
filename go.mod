@@ -3,7 +3,7 @@ module github.com/aeon022/notectl
 go 1.26.5
 
 require (
-	github.com/aeon022/missionctl-core v0.0.0-20260801204118-4785531e86ae
+	github.com/aeon022/missionctl-core v0.0.0-20260802150042-e2881ef3fdcf
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0

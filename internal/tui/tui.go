@@ -2550,7 +2550,7 @@ func formatMarkdownTable(lines []string, width ...int) []string {
 // from here anymore.
 func loadNotesCmd(folder string) tea.Cmd {
 	return func() tea.Msg {
-		s, err := store.New(config.DBPath())
+		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return errMsg{err}
 		}
@@ -2678,7 +2678,7 @@ func doSyncCmd() tea.Cmd {
 		if err != nil {
 			return syncDoneMsg{err: err}
 		}
-		s, err := store.New(config.DBPath())
+		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return syncDoneMsg{err: err}
 		}
@@ -2703,7 +2703,7 @@ func saveSettingsCmd(vaultPath string, source config.SourceType) tea.Cmd {
 
 func deleteNoteCmd(id, relPath string) tea.Cmd {
 	return func() tea.Msg {
-		s, err := store.New(config.DBPath())
+		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return deletedMsg{err}
 		}
@@ -2749,7 +2749,7 @@ func undoDeleteNoteCmd(n models.Note) tea.Cmd {
 				return noteRestoredMsg{err: err}
 			}
 		}
-		s, err := store.New(config.DBPath())
+		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return noteRestoredMsg{err: err}
 		}
@@ -2820,7 +2820,7 @@ func writeNoteCmd(id, title, body, tagsStr, folder string, editBlocks []notes.Bl
 			}
 		}
 
-		if s, serr := store.New(config.DBPath()); serr == nil {
+		if s, serr := store.New(config.DBPath(), config.Shared()); serr == nil {
 			defer s.Close()
 			_ = s.Upsert(context.Background(), n)
 		}

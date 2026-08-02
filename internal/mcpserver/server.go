@@ -74,7 +74,7 @@ func handleList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 	source := req.GetString("source", "")
 	limit := int(req.GetFloat("limit", 50))
 
-	s, err := store.New(config.DBPath())
+	s, err := store.New(config.DBPath(), config.Shared())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -113,7 +113,7 @@ func handleRead(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 		return mcp.NewToolResultError("title is required"), nil
 	}
 
-	s, err := store.New(config.DBPath())
+	s, err := store.New(config.DBPath(), config.Shared())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -166,7 +166,7 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	}
 
 	// update cache
-	if s, serr := store.New(config.DBPath()); serr == nil {
+	if s, serr := store.New(config.DBPath(), config.Shared()); serr == nil {
 		defer s.Close()
 		_ = s.Upsert(context.Background(), n)
 	}
@@ -181,7 +181,7 @@ func handleSearch(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		return mcp.NewToolResultError("query is required"), nil
 	}
 
-	s, err := store.New(config.DBPath())
+	s, err := store.New(config.DBPath(), config.Shared())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -250,7 +250,7 @@ func handleGetDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("create daily note: %v", err)), nil
 	}
-	if s, serr := store.New(config.DBPath()); serr == nil {
+	if s, serr := store.New(config.DBPath(), config.Shared()); serr == nil {
 		defer s.Close()
 		_ = s.Upsert(context.Background(), n)
 	}
@@ -291,7 +291,7 @@ func handleAppendDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if s, serr := store.New(config.DBPath()); serr == nil {
+	if s, serr := store.New(config.DBPath(), config.Shared()); serr == nil {
 		defer s.Close()
 		_ = s.Upsert(context.Background(), n)
 	}
@@ -343,7 +343,7 @@ func handleSync(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, 
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	s, err := store.New(config.DBPath())
+	s, err := store.New(config.DBPath(), config.Shared())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

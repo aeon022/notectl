@@ -21,7 +21,7 @@ var listCmd = &cobra.Command{
 		source, _ := cmd.Flags().GetString("source")
 		limit, _ := cmd.Flags().GetInt("limit")
 
-		s, err := store.New(config.DBPath())
+		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return err
 		}
