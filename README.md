@@ -285,12 +285,23 @@ source: obsidian   # obsidian | apple | markdown
 |-----|-------------|
 | `vault_path` | Absolute or `~`-prefixed path to the vault root |
 | `source` | Vault type: `obsidian` (default), `apple` (Apple Notes export), `markdown` (plain folder) |
+| `data_dir` | Directory for notectl's own SQLite index — set this to sync it across devices (see below) |
 
 Environment variable override:
 
 ```bash
 export NOTECTL_VAULT_PATH=~/Documents/ObsidianVault
 ```
+
+### Syncing across devices
+
+By default notectl's index lives at `~/.local/share/notectl/notes.db`, local to this machine. To share it across devices, set `data_dir` (or `NOTECTL_DATA_DIR`) to a folder you already sync yourself — iCloud Drive, Dropbox, Syncthing, etc:
+
+```bash
+export NOTECTL_DATA_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/notectl"
+```
+
+Once set, notectl automatically switches its SQLite journal mode from WAL to rollback-journal — WAL splits the database across multiple files that a folder-sync client can't update atomically together, so this switch keeps the directory down to a single consistent file whenever notectl isn't actively writing. A same-machine lock also prevents two notectl processes from opening the index at once (run `notectl doctor` to see the current mode and path). This only protects against the same-machine and stale-snapshot failure modes, not two machines editing at the exact same instant; an undownloaded iCloud file is reported explicitly rather than as a bare error.
 
 ### Apple Notes (`source: apple`) & Checklists
 
