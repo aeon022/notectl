@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ const (
 	viewSettings view = iota
 	viewHelp     view = iota
 	viewTags     view = iota
+	viewGraph    view = iota
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -164,6 +166,15 @@ type Model struct {
 
 	// tag browser ("t")
 	tagCursor int
+
+	// link graph ("L" from detail) — a one-hop neighbor explorer: focus
+	// note plus its outgoing/incoming wiki-links, cursor moves over the
+	// combined neighbor list, enter re-focuses the graph on that neighbor.
+	graphFocus    *models.Note
+	graphOut      []models.Note
+	graphIn       []models.Note
+	graphCursor   int
+	graphPrevView view // where esc/q returns to (list or detail)
 
 	// openPath, when set (via `notectl --open <relpath>`, e.g. jumping in
 	// from diaryctl's linked entry), opens that note's detail view as soon
@@ -637,6 +648,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case viewTags:
 			return m.updateTags(msg)
+		case viewGraph:
+			return m.updateGraph(msg)
 		}
 	}
 
@@ -875,6 +888,13 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tagCursor = 0
 		m.view = viewTags
 		return m, nil
+	case "L":
+		if len(m.notes) > 0 {
+			m = m.setGraphFocus(m.notes[m.cursor])
+			m.graphPrevView = viewList
+			m.view = viewGraph
+			return m, nil
+		}
 	case "?":
 		m = m.openHelp()
 	case "esc":
@@ -945,6 +965,14 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "o":
 		if m.detail != nil {
 			return m, openExternalCmd(m.detail.ID, m.detail.Title, m.detail.Path)
+		}
+
+	case "L":
+		if m.detail != nil {
+			m = m.setGraphFocus(*m.detail)
+			m.graphPrevView = viewDetail
+			m.view = viewGraph
+			return m, nil
 		}
 
 	case "d":
@@ -1175,6 +1203,39 @@ func (m Model) updateTags(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewList
 		return m, nil
+	}
+	return m, nil
+}
+
+// updateGraph drives the link-graph explorer: j/k moves the cursor over the
+// focus note's combined outgoing+incoming neighbors, enter re-focuses the
+// graph on the selected neighbor (one-hop traversal, chainable), "d" opens
+// that neighbor's full detail view, esc/q returns to wherever "L" was
+// pressed from.
+func (m Model) updateGraph(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	neighbors := m.graphNeighbors()
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "q", "esc":
+		m.view = m.graphPrevView
+		return m, nil
+	case "j", "down":
+		if m.graphCursor < len(neighbors)-1 {
+			m.graphCursor++
+		}
+	case "k", "up":
+		if m.graphCursor > 0 {
+			m.graphCursor--
+		}
+	case "enter":
+		if m.graphCursor < len(neighbors) {
+			m = m.setGraphFocus(neighbors[m.graphCursor])
+		}
+	case "d":
+		if m.graphCursor < len(neighbors) {
+			return m.openNoteDetail(neighbors[m.graphCursor])
+		}
 	}
 	return m, nil
 }
@@ -1414,6 +1475,8 @@ func (m Model) View() string {
 		return overlay.Center(m.renderList(), m.renderHelpPopup(), m.width, m.height, 0)
 	case viewTags:
 		return overlay.Center(m.renderList(), m.renderTags(), m.width, m.height, 0)
+	case viewGraph:
+		return m.renderGraph()
 	default:
 		return m.renderList()
 	}
@@ -1443,6 +1506,48 @@ func (m Model) renderTags() string {
 		Render(b.String())
 }
 
+// renderGraph draws the link-graph explorer: the focus note centered, its
+// outgoing wiki-links above and incoming backlinks below, connected with
+// simple box-drawing lines. Not a force-directed layout — a terminal has no
+// room for that — just a one-hop neighbor view you can walk through.
+func (m Model) renderGraph() string {
+	if m.graphFocus == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n  " + styleHeader.Render("Link Graph") + "\n\n")
+
+	cursor := 0
+	renderNeighbor := func(n models.Note, arrow string) {
+		row := arrow + " " + n.Title
+		if cursor == m.graphCursor {
+			b.WriteString("  " + styleSelected.Render("› "+row) + "\n")
+		} else {
+			b.WriteString("    " + styleMuted.Render(row) + "\n")
+		}
+		cursor++
+	}
+
+	if len(m.graphOut) == 0 {
+		b.WriteString("    " + styleHelp.Render("(no outgoing links)") + "\n")
+	}
+	for _, n := range m.graphOut {
+		renderNeighbor(n, "──▶")
+	}
+
+	b.WriteString("\n  " + styleTag.Render("┃ "+m.graphFocus.Title) + "\n\n")
+
+	if len(m.graphIn) == 0 {
+		b.WriteString("    " + styleHelp.Render("(no backlinks)") + "\n")
+	}
+	for _, n := range m.graphIn {
+		renderNeighbor(n, "◀──")
+	}
+
+	b.WriteString("\n" + styleHelp.Render("j/k move  enter re-focus graph here  d open note  esc/q back"))
+	return b.String()
+}
+
 func (m Model) helpContent() string {
 	key := func(k string) string { return styleBold.Render(fmt.Sprintf("%-11s", k)) }
 	row := func(k, desc string) string { return "  " + key(k) + styleHelp.Render(desc) + "\n" }
@@ -1469,6 +1574,7 @@ func (m Model) helpContent() string {
 	b.WriteString(row("s", "sync"))
 	b.WriteString(row("/", "search (esc clears)"))
 	b.WriteString(row("t", "browse tags"))
+	b.WriteString(row("L", "link graph (browse [[wiki-links]])"))
 	b.WriteString(row("?", "toggle this help"))
 	b.WriteString(row("q", "quit"))
 	return b.String()
@@ -1925,7 +2031,7 @@ func (m Model) renderDetail() string {
 	if m.vp.TotalLineCount() > m.vp.Height {
 		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
 	}
-	helpStr := "esc:back  e:edit  d:delete  o:notes  j/k:scroll  space:toggle checkbox  q:quit"
+	helpStr := "esc:back  e:edit  d:delete  o:notes  L:link graph  j/k:scroll  space:toggle checkbox  q:quit"
 	b.WriteString("\n\n" + detailLeftPad + styleHelp.Render(helpStr) + styleMuted.Render(pct))
 	return b.String()
 }
@@ -1943,6 +2049,45 @@ func backlinksFor(target models.Note, all []models.Note) []models.Note {
 			out = append(out, n)
 		}
 	}
+	return out
+}
+
+var wikiLinkRe = regexp.MustCompile(`\[\[([^\]]+)\]\]`)
+
+// outgoingLinksFor returns every note in all that source's body links to via
+// an Obsidian-style [[Title]] wiki-link. Titles with no matching note (a
+// link to a not-yet-created note) are silently skipped.
+func outgoingLinksFor(source models.Note, all []models.Note) []models.Note {
+	var out []models.Note
+	for _, m := range wikiLinkRe.FindAllStringSubmatch(source.Body, -1) {
+		title := m[1]
+		for _, n := range all {
+			if n.ID != source.ID && n.Title == title {
+				out = append(out, n)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// setGraphFocus re-centers the link graph on n, computing its one-hop
+// neighbors fresh (m.allNotes is the unfiltered set, so the graph isn't
+// limited by the current folder tab or search query).
+func (m Model) setGraphFocus(n models.Note) Model {
+	m.graphFocus = &n
+	m.graphOut = outgoingLinksFor(n, m.allNotes)
+	m.graphIn = backlinksFor(n, m.allNotes)
+	m.graphCursor = 0
+	return m
+}
+
+// graphNeighbors is the combined, cursor-addressable neighbor list: outgoing
+// links first, then incoming (matches render order).
+func (m Model) graphNeighbors() []models.Note {
+	out := make([]models.Note, 0, len(m.graphOut)+len(m.graphIn))
+	out = append(out, m.graphOut...)
+	out = append(out, m.graphIn...)
 	return out
 }
 
