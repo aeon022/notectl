@@ -128,7 +128,28 @@ import json, os, sys, re
 cmd = sys.argv[1]
 updated = 0
 
-# 1. Claude Desktop
+# 1. Claude Code (CLI)
+claude_code_json = os.path.expanduser("~/.claude.json")
+data = {}
+if os.path.exists(claude_code_json):
+    try:
+        with open(claude_code_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        pass
+if "mcpServers" not in data or not isinstance(data["mcpServers"], dict):
+    data["mcpServers"] = {}
+data["mcpServers"]["notectl"] = {"command": cmd, "args": ["mcp"]}
+try:
+    with open(claude_code_json, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    print("  ✔ Claude Code (CLI): ~/.claude.json")
+    updated += 1
+except Exception as e:
+    print(f"  ❌ Claude Code (CLI) Fehler: {e}")
+
+# 2. Claude Desktop
 claude_dir = os.path.expanduser("~/Library/Application Support/Claude")
 if os.path.exists(claude_dir):
     claude_path = os.path.join(claude_dir, "claude_desktop_config.json")
@@ -150,7 +171,7 @@ if os.path.exists(claude_dir):
     except Exception as e:
         print(f"  ❌ Claude Desktop Fehler: {e}")
 
-# 2. Google Antigravity (agy / Antigravity IDE)
+# 3. Google Antigravity (agy / Antigravity IDE)
 gemini_dir = os.path.expanduser("~/.gemini/config")
 if os.path.exists(gemini_dir):
     gemini_path = os.path.join(gemini_dir, "mcp_config.json")
@@ -172,7 +193,7 @@ if os.path.exists(gemini_dir):
     except Exception as e:
         print(f"  ❌ Google Antigravity Fehler: {e}")
 
-# 3. OpenAI Codex CLI (codex)
+# 4. OpenAI Codex CLI (codex)
 codex_dir = os.path.expanduser("~/.codex")
 if os.path.exists(codex_dir):
     codex_path = os.path.join(codex_dir, "config.toml")
