@@ -21,10 +21,12 @@ Syncs markdown files to a local SQLite cache, exposes a fast full-screen TUI, an
    source: obsidian
    ```
 
-3. **Index the vault**
+3. **Index the vault, then confirm the config actually points where you think**
    ```bash
    notectl sync
+   notectl doctor
    ```
+   `doctor` flags `vault_path` if it's still the built-in default (`~/Documents/Notes`) — every note `write`/`write_note` creates for `source: obsidian`/`markdown` lands there, so it's worth confirming this is really your vault before you write anything through it.
 
 4. **Open the TUI**
    ```bash
