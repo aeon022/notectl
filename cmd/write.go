@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aeon022/notectl/internal/config"
+	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/spf13/cobra"
@@ -15,7 +17,7 @@ import (
 
 var writeCmd = &cobra.Command{
 	Use:   "write <title>",
-	Short: "Write a note to the Obsidian vault (body from --body or stdin)",
+	Short: "Write a note to the configured source — Apple Notes or the Obsidian vault (body from --body or stdin)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		title := args[0]
@@ -41,9 +43,20 @@ var writeCmd = &cobra.Command{
 			}
 		}
 
-		n, err := notes.Write(config.VaultPath(), title, body, tags, folder)
-		if err != nil {
-			return err
+		var n *models.Note
+		if config.Source() == config.SourceApple {
+			id, werr := notes.WriteApple("", title, notes.TextToHTML(body), folder)
+			if werr != nil {
+				return werr
+			}
+			now := time.Now()
+			n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "apple", ModTime: now, Created: now}
+		} else {
+			var werr error
+			n, werr = notes.Write(config.VaultPath(), title, body, tags, folder)
+			if werr != nil {
+				return werr
+			}
 		}
 
 		// update SQLite cache

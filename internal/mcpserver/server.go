@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aeon022/notectl/internal/config"
+	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -45,7 +46,7 @@ func toolRead() mcp.Tool {
 
 func toolWrite() mcp.Tool {
 	return mcp.NewTool("write_note",
-		mcp.WithDescription("Write or update a note in the Obsidian vault. Creates the file if it doesn't exist."),
+		mcp.WithDescription("Write a new note into the configured source (Apple Notes, or the Obsidian vault). Creates it if it doesn't exist."),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Note title (becomes the filename)")),
 		mcp.WithString("body", mcp.Required(), mcp.Description("Note content in Markdown")),
 		mcp.WithString("folder", mcp.Description("Subfolder within vault (optional)")),
@@ -160,9 +161,20 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		}
 	}
 
-	n, err := notes.Write(config.VaultPath(), title, body, tags, folder)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+	var n *models.Note
+	if config.Source() == config.SourceApple {
+		id, werr := notes.WriteApple("", title, notes.TextToHTML(body), folder)
+		if werr != nil {
+			return mcp.NewToolResultError(werr.Error()), nil
+		}
+		now := time.Now()
+		n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "apple", ModTime: now, Created: now}
+	} else {
+		var werr error
+		n, werr = notes.Write(config.VaultPath(), title, body, tags, folder)
+		if werr != nil {
+			return mcp.NewToolResultError(werr.Error()), nil
+		}
 	}
 
 	// update cache
