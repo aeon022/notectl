@@ -14,6 +14,7 @@ import (
 	"github.com/aeon022/missionctl-core/keymap"
 	"github.com/aeon022/missionctl-core/lastsync"
 	"github.com/aeon022/missionctl-core/overlay"
+	"github.com/aeon022/missionctl-core/palette"
 	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/missionctl-core/uistate"
 	"github.com/aeon022/notectl/internal/config"
@@ -156,6 +157,10 @@ type Model struct {
 	searchQ      string
 	searching    bool
 	searchInput  textinput.Model
+	// ":" command palette
+	inPalette     bool
+	paletteInput  textinput.Model
+	paletteCursor int
 	folders      []string
 	activeTab    int // 0 = All, 1+ = folder
 	folderCounts map[string]int
@@ -228,6 +233,31 @@ type Model struct {
 	helpPopH int
 }
 
+// ── command palette (":") ────────────────────────────────────────────────────
+//
+// Types out full words instead of memorizing single-key shortcuts. Reuses
+// the exact same key handling every shortcut already goes through
+// (updateList) by replaying the mapped keypress, so behavior is guaranteed
+// identical to typing the key directly. Matching logic lives in
+// missionctl-core/palette (shared across the suite); this list is
+// notectl-specific.
+var paletteCommands = []palette.Command{
+	{Name: "new", Desc: "New note", Key: "n"},
+	{Name: "edit", Desc: "Edit selected note", Key: "e"},
+	{Name: "delete", Desc: "Delete note (asks to confirm)", Key: "d"},
+	{Name: "open", Desc: "Open in external app", Key: "o"},
+	{Name: "copy", Desc: "Copy title to clipboard", Key: "y"},
+	{Name: "undo", Desc: "Undo last delete", Key: "u"},
+	{Name: "sort", Desc: "Toggle sort (date / title A–Z)", Key: "S"},
+	{Name: "settings", Desc: "Settings (vault path, source)", Key: "p"},
+	{Name: "sync", Desc: "Sync", Key: "s"},
+	{Name: "search", Desc: "Search notes", Key: "/"},
+	{Name: "tags", Desc: "Browse tags", Key: "t"},
+	{Name: "graph", Desc: "Link graph (browse [[wiki-links]])", Key: "L"},
+	{Name: "help", Desc: "Show help", Key: "?"},
+	{Name: "quit", Desc: "Quit notectl", Key: "q"},
+}
+
 func New(openPath string) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
@@ -236,6 +266,10 @@ func New(openPath string) Model {
 	si := textinput.New()
 	si.Placeholder = "search notes…"
 	si.CharLimit = 200
+
+	pi := textinput.New()
+	pi.Placeholder = "command…"
+	pi.CharLimit = 40
 
 	ti := textinput.New()
 	ti.Placeholder = "Note title"
@@ -270,6 +304,7 @@ func New(openPath string) Model {
 	return Model{
 		sp:                   sp,
 		searchInput:          si,
+		paletteInput:         pi,
 		titleInput:           ti,
 		tagsInput:            tags,
 		bodyArea:             body,
@@ -682,6 +717,49 @@ func (m Model) openNoteDetail(n models.Note) (Model, tea.Cmd) {
 }
 
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.inPalette {
+		closePalette := func(mm Model) Model {
+			mm.inPalette = false
+			mm.paletteInput.Blur()
+			mm.paletteInput.SetValue("")
+			mm.paletteCursor = 0
+			return mm
+		}
+		switch msg.String() {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			return closePalette(m), nil
+		case "up", "ctrl+p":
+			if m.paletteCursor > 0 {
+				m.paletteCursor--
+			}
+			return m, nil
+		case "down", "ctrl+n":
+			matches := palette.Match(paletteCommands, m.paletteInput.Value())
+			if m.paletteCursor < len(matches)-1 {
+				m.paletteCursor++
+			}
+			return m, nil
+		case "enter":
+			matches := palette.Match(paletteCommands, m.paletteInput.Value())
+			if len(matches) == 0 {
+				return closePalette(m), nil
+			}
+			if m.paletteCursor >= len(matches) {
+				m.paletteCursor = len(matches) - 1
+			}
+			chosen := matches[m.paletteCursor]
+			m = closePalette(m)
+			replay := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(chosen.Key)}
+			return m.updateList(replay)
+		}
+		var cmd tea.Cmd
+		m.paletteInput, cmd = m.paletteInput.Update(msg)
+		m.paletteCursor = 0
+		return m, cmd
+	}
+
 	if m.searching {
 		switch msg.String() {
 		case "enter":
@@ -885,6 +963,11 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		m.searchInput.Focus()
 		m.searchInput.SetValue("")
+	case ":":
+		m.inPalette = true
+		m.paletteCursor = 0
+		m.paletteInput.SetValue("")
+		return m, m.paletteInput.Focus()
 	case "t":
 		m.tagCursor = 0
 		m.view = viewTags
@@ -1558,6 +1641,7 @@ func (m Model) helpContent() string {
 		Row("tab", "next folder").
 		Row("s-tab", "previous folder").
 		Row("< / >", "resize panes (two-pane layout)").
+		Row(":", "command palette — type an action by name").
 		Section("Notes").
 		Row("enter", "open note").
 		Row("n", "new note").
@@ -1624,6 +1708,33 @@ func (m Model) renderList() string {
 	return m.renderSinglePane()
 }
 
+// renderPaletteBlock renders the ":" command palette's input line + up to 6
+// live-filtered matches. listHeight/listStartY reserve exactly as many
+// lines as this can produce (1 input + up to 6 matches + 1 blank), so the
+// list below never overflows the terminal and pushes this block itself off
+// screen.
+func (m Model) renderPaletteBlock() string {
+	var b strings.Builder
+	b.WriteString("  " + m.paletteInput.View() + "\n")
+	matches := palette.Match(paletteCommands, m.paletteInput.Value())
+	if len(matches) > 6 {
+		matches = matches[:6]
+	}
+	if len(matches) == 0 {
+		b.WriteString("    " + styleMuted.Render("no matching command") + "\n")
+	}
+	for i, c := range matches {
+		row := fmt.Sprintf("%-9s %s", c.Name, c.Desc)
+		if i == m.paletteCursor {
+			b.WriteString("    " + styleSelected.Render("▶ "+row) + "\n")
+		} else {
+			b.WriteString("      " + styleMuted.Render(row) + "\n")
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
 // ── Single-pane (narrow terminals) ────────────────────────────────────────────
 
 func (m Model) renderSinglePane() string {
@@ -1637,6 +1748,9 @@ func (m Model) renderSinglePane() string {
 	}
 	if m.searchQ != "" {
 		b.WriteString(styleMuted.Render("  /"+m.searchQ) + "\n")
+	}
+	if m.inPalette {
+		b.WriteString(m.renderPaletteBlock())
 	}
 
 	listH := m.listHeight()
@@ -1676,6 +1790,9 @@ func (m Model) renderTwoPane() string {
 	// search row replaces one line of the pane
 	if m.searching {
 		b.WriteString("  " + m.searchInput.View() + "\n")
+	}
+	if m.inPalette {
+		b.WriteString(m.renderPaletteBlock())
 	}
 
 	// Reserve a 1-column margin on each side of the divider (left pane's
@@ -1817,6 +1934,9 @@ func (m Model) listStartY() int {
 		if m.searching {
 			y++
 		}
+		if m.inPalette {
+			y += 8
+		}
 		return y
 	}
 	if m.searching {
@@ -1824,6 +1944,9 @@ func (m Model) listStartY() int {
 	}
 	if m.searchQ != "" {
 		y++
+	}
+	if m.inPalette {
+		y += 8
 	}
 	return y
 }
@@ -1835,6 +1958,9 @@ func (m Model) listHeight() int {
 		h := m.height - 3 - helpBarHeight - 1 // -1: blank padding line above the help bar
 		if m.searching {
 			h--
+		}
+		if m.inPalette {
+			h -= 8
 		}
 		if h < 1 {
 			h = 1

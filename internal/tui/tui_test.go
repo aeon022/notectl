@@ -214,6 +214,45 @@ func TestRenderScrollbarAlignsGlyphColumn_VariationSelectorEmoji(t *testing.T) {
 	}
 }
 
+func TestCommandPalette_TypeFilterAndExecute(t *testing.T) {
+	m := New("")
+	m.width, m.height = 100, 30
+
+	mi, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+	m = mi.(Model)
+	if !m.inPalette {
+		t.Fatal("expected inPalette after ':'")
+	}
+
+	for _, r := range "sort" {
+		mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = mi.(Model)
+	}
+	wasSortByDate := m.sortByDate
+
+	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mi.(Model)
+	if m.inPalette {
+		t.Error("expected palette to close after executing a command")
+	}
+	if m.sortByDate == wasSortByDate {
+		t.Error("expected 'sort' command to replay 'S' and flip sortByDate")
+	}
+}
+
+func TestCommandPalette_EscCloses(t *testing.T) {
+	m := New("")
+	m.width, m.height = 100, 30
+	mi, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+	m = mi.(Model)
+
+	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mi.(Model)
+	if m.inPalette {
+		t.Error("expected esc to close the palette")
+	}
+}
+
 func TestHelpOverlay_OpenScrollClose(t *testing.T) {
 	m := Model{width: 100, height: 30}
 
