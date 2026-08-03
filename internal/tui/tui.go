@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aeon022/missionctl-core/humanize"
+	"github.com/aeon022/missionctl-core/keymap"
 	"github.com/aeon022/missionctl-core/lastsync"
 	"github.com/aeon022/missionctl-core/overlay"
 	"github.com/aeon022/missionctl-core/theme"
@@ -1549,35 +1550,31 @@ func (m Model) renderGraph() string {
 }
 
 func (m Model) helpContent() string {
-	key := func(k string) string { return styleBold.Render(fmt.Sprintf("%-11s", k)) }
-	row := func(k, desc string) string { return "  " + key(k) + styleHelp.Render(desc) + "\n" }
-	section := func(t string) string { return "\n  " + styleHeader.Render(t) + "\n" }
-
-	var b strings.Builder
-	b.WriteString(section("Navigation"))
-	b.WriteString(row("j / k", "move down / up"))
-	b.WriteString(row("g / G", "jump to top / bottom"))
-	b.WriteString(row("pgdn/pgup", "page down / up"))
-	b.WriteString(row("tab", "next folder"))
-	b.WriteString(row("shift+tab", "previous folder"))
-	b.WriteString(row("< / >", "resize panes (two-pane layout)"))
-	b.WriteString(section("Notes"))
-	b.WriteString(row("enter", "open note"))
-	b.WriteString(row("n", "new note"))
-	b.WriteString(row("e", "edit note"))
-	b.WriteString(row("d", "delete note (asks to confirm)"))
-	b.WriteString(row("o", "open in external app"))
-	b.WriteString(row("y", "copy title to clipboard"))
-	b.WriteString(section("Other"))
-	b.WriteString(row("S", "toggle sort (date / title A–Z)"))
-	b.WriteString(row("p", "settings (vault path, source)"))
-	b.WriteString(row("s", "sync"))
-	b.WriteString(row("/", "search (esc clears)"))
-	b.WriteString(row("t", "browse tags"))
-	b.WriteString(row("L", "link graph (browse [[wiki-links]])"))
-	b.WriteString(row("?", "toggle this help"))
-	b.WriteString(row("q", "quit"))
-	return b.String()
+	return keymap.New("notectl", "notes from the terminal").
+		Section("Navigation").
+		Row("j / k", "move down / up").
+		Row("g / G", "jump to top / bottom").
+		Row("pgdn/up", "page down / up").
+		Row("tab", "next folder").
+		Row("s-tab", "previous folder").
+		Row("< / >", "resize panes (two-pane layout)").
+		Section("Notes").
+		Row("enter", "open note").
+		Row("n", "new note").
+		Row("e", "edit note").
+		Row("d", "delete note (asks to confirm)").
+		Row("o", "open in external app").
+		Row("y", "copy title to clipboard").
+		Section("Other").
+		Row("S", "toggle sort (date / title A–Z)").
+		Row("p", "settings (vault path, source)").
+		Row("s", "sync").
+		Row("/", "search (esc clears)").
+		Row("t", "browse tags").
+		Row("L", "link graph (browse [[wiki-links]])").
+		Row("?", "toggle this help").
+		Row("q", "quit").
+		String()
 }
 
 // openHelp sizes and populates the transient help popup (see
