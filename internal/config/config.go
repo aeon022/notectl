@@ -117,6 +117,82 @@ func configDir() string {
 	return filepath.Join(home, ".config", "notectl")
 }
 
+// defaultPolarOrgID is aeon022's Polar.sh organization — shared across the
+// missionctl suite, same as postctl's.
+const defaultPolarOrgID = "aa792ea4-650e-492e-a955-9b3d564e943e"
+
+// IsPro reports whether a valid Pro/Bundle license is active on this
+// machine — gates having more than one named vault.
+func IsPro() bool {
+	return viper.GetString("license_status") == "active"
+}
+
+func LicenseKey() string {
+	return viper.GetString("license_key")
+}
+
+func LicenseStatus() string {
+	return viper.GetString("license_status")
+}
+
+func PolarOrgID() string {
+	if v := viper.GetString("polar_org_id"); v != "" {
+		return v
+	}
+	return defaultPolarOrgID
+}
+
+// SetLicense persists the license key/status to
+// ~/.config/notectl/notectl.yaml.
+func SetLicense(key, status string) error {
+	viper.Set("license_key", key)
+	viper.Set("license_status", status)
+	dir := configDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return viper.WriteConfigAs(filepath.Join(dir, "notectl.yaml"))
+}
+
+// Vaults returns the configured named vaults (name -> path). Empty if the
+// user has never used `notectl vault add`.
+func Vaults() map[string]string {
+	raw := viper.GetStringMapString("vaults")
+	out := make(map[string]string, len(raw))
+	for name, path := range raw {
+		out[name] = path
+	}
+	return out
+}
+
+// VaultAdd registers a named vault. Adding a second named vault requires an
+// active Pro/Bundle license — the free tier is limited to one vault (via
+// vault_path, or a single named vault).
+func VaultAdd(name, path string) error {
+	vaults := Vaults()
+	if _, exists := vaults[name]; !exists && len(vaults) >= 1 && !IsPro() {
+		return fmt.Errorf("multiple vaults require the missionctl Bundle — get it at https://missionctl.sh/#pricing, then: notectl license activate <key>")
+	}
+	vaults[name] = contractHome(path)
+	viper.Set("vaults", vaults)
+	dir := configDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return viper.WriteConfigAs(filepath.Join(dir, "notectl.yaml"))
+}
+
+// VaultUse switches the active vault to a previously-added named vault by
+// pointing vault_path at it.
+func VaultUse(name string) error {
+	vaults := Vaults()
+	path, ok := vaults[name]
+	if !ok {
+		return fmt.Errorf("no vault named %q — see: notectl vault list", name)
+	}
+	return Save(expandHome(path), Source())
+}
+
 func expandHome(p string) string {
 	if len(p) >= 2 && p[:2] == "~/" {
 		home, _ := os.UserHomeDir()
