@@ -125,8 +125,8 @@ func configDir() string {
 // our org grants access", so this is a no-op until both are filled in
 // once the individual product is created and its benefit ID is known.
 const (
-	bundleBenefitID  = ""
-	notectlBenefitID = ""
+	bundleBenefitID  = "de1be860-1dfc-43da-99a8-206fb2573f09"
+	notectlBenefitID = "5a6a4f6d-eb02-428a-aa02-e8cd7e37a6be"
 )
 
 // IsPro reports whether a valid Pro/Bundle or notectl-only license is
