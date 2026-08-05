@@ -111,16 +111,21 @@ end tell
 	}
 
 	target := "default account"
+	folderSetup := ""
 	if folder != "" {
 		target = fmt.Sprintf(`folder "%s"`, escapeAS(folder))
+		folderSetup = fmt.Sprintf(`
+	if not (exists folder "%s") then
+		make new folder with properties {name:"%s"}
+	end if`, escapeAS(folder), escapeAS(folder))
 	}
 	fullBody := "<div>" + htmlEscape(title) + "</div><div><br></div>" + htmlBody
 	createScript := fmt.Sprintf(`
-tell application "Notes"
+tell application "Notes"%s
 	set newNote to make new note at %s with properties {body:"%s"}
 	return id of newNote
 end tell
-`, target, escapeAS(fullBody))
+`, folderSetup, target, escapeAS(fullBody))
 	out, err := runAppleScript(createScript)
 	if err != nil {
 		return "", err
