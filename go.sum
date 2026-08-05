@@ -1,9 +1,7 @@
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
-github.com/aeon022/missionctl-core v0.0.0-20260802150042-e2881ef3fdcf h1:qWoXbKw1nufa+nP5DrRzNe/s6glgVLIPDWFnPKSxhW8=
-github.com/aeon022/missionctl-core v0.0.0-20260802150042-e2881ef3fdcf/go.mod h1:RWHy562XcOs9idgzJRMUOmuYjjRyo6KUSl10bS0AZ5M=
-github.com/aeon022/missionctl-core v0.0.0-20260803153211-6cf4fcc352f5 h1:MAgPwKMbRKoxRIJdJRxlLsFYiz2OtBoyUsSEcu9veXU=
-github.com/aeon022/missionctl-core v0.0.0-20260803153211-6cf4fcc352f5/go.mod h1:RWHy562XcOs9idgzJRMUOmuYjjRyo6KUSl10bS0AZ5M=
+github.com/aeon022/missionctl-core v0.0.0-20260805130408-332d3f233c7e h1:ILOBk3iAGGHTLxsCPEFCGxnIxr/G4ViP7EkDX/UgSEs=
+github.com/aeon022/missionctl-core v0.0.0-20260805130408-332d3f233c7e/go.mod h1:ne5u+XkfjhUTZVAaih66VqQu2U81fMO0FdzBOz8s8WY=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
 github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
