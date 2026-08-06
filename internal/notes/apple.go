@@ -344,14 +344,22 @@ func htmlEscape(s string) string {
 	return s
 }
 
-// DeleteApple moves a note to Trash in Apple Notes.
+// DeleteApple moves a note to Trash in Apple Notes. Returns an error if no
+// note with this id exists — the previous version wrapped the delete in a
+// bare `try` with no failure path, so a stale/mismatched id (note already
+// gone, wrong id format) silently did nothing while still reporting success
+// to the caller, which then removed the local cache row regardless: a real
+// Apple Note orphaned and untracked. Same bug class fixed in calctl's
+// DeleteEvent on 2026-08-01.
 func DeleteApple(id string) error {
 	script := fmt.Sprintf(`
 tell application "Notes"
-	try
+	if exists note id "%s" then
 		delete note id "%s"
-	end try
-end tell`, escapeAS(rawAppleID(id)))
+	else
+		error "note not found: %s"
+	end if
+end tell`, escapeAS(rawAppleID(id)), escapeAS(rawAppleID(id)), escapeAS(rawAppleID(id)))
 	_, err := runAppleScript(script)
 	return err
 }

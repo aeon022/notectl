@@ -2826,6 +2826,21 @@ func saveSettingsCmd(vaultPath string, source config.SourceType) tea.Cmd {
 
 func deleteNoteCmd(id, relPath string) tea.Cmd {
 	return func() tea.Msg {
+		// Real source deleted first, local cache row only removed once that
+		// actually succeeds — used to delete the cache row unconditionally
+		// and discard the real delete's error, which on a failure (stale id,
+		// file already gone) left the real note/file alive and untracked
+		// while the cache said it was gone. Same bug class fixed in
+		// calctl's DeleteEvent on 2026-08-01.
+		if config.Source() == config.SourceApple {
+			if err := notes.DeleteApple(id); err != nil {
+				return deletedMsg{err}
+			}
+		} else if relPath != "" {
+			if err := notes.Delete(config.VaultPath(), relPath); err != nil {
+				return deletedMsg{err}
+			}
+		}
 		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return deletedMsg{err}
@@ -2833,11 +2848,6 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 		defer s.Close()
 		if err := s.Delete(context.Background(), id); err != nil {
 			return deletedMsg{err}
-		}
-		if config.Source() == config.SourceApple {
-			_ = notes.DeleteApple(id)
-		} else if relPath != "" {
-			_ = notes.Delete(config.VaultPath(), relPath)
 		}
 		return deletedMsg{}
 	}
