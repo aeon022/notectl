@@ -44,14 +44,22 @@ var writeCmd = &cobra.Command{
 		}
 
 		var n *models.Note
-		if config.Source() == config.SourceApple {
+		switch config.Source() {
+		case config.SourceApple:
 			id, werr := notes.WriteApple("", title, notes.TextToHTML(body), folder)
 			if werr != nil {
 				return werr
 			}
 			now := time.Now()
 			n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "apple", ModTime: now, Created: now}
-		} else {
+		case config.SourceJoplin:
+			id, werr := notes.WriteJoplin("", title, body, folder)
+			if werr != nil {
+				return werr
+			}
+			now := time.Now()
+			n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "joplin", ModTime: now, Created: now}
+		default:
 			var werr error
 			n, werr = notes.Write(config.VaultPath(), title, body, tags, folder)
 			if werr != nil {

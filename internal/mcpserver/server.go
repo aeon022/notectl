@@ -162,14 +162,22 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	}
 
 	var n *models.Note
-	if config.Source() == config.SourceApple {
+	switch config.Source() {
+	case config.SourceApple:
 		id, werr := notes.WriteApple("", title, notes.TextToHTML(body), folder)
 		if werr != nil {
 			return mcp.NewToolResultError(werr.Error()), nil
 		}
 		now := time.Now()
 		n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "apple", ModTime: now, Created: now}
-	} else {
+	case config.SourceJoplin:
+		id, werr := notes.WriteJoplin("", title, body, folder)
+		if werr != nil {
+			return mcp.NewToolResultError(werr.Error()), nil
+		}
+		now := time.Now()
+		n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "joplin", ModTime: now, Created: now}
+	default:
 		var werr error
 		n, werr = notes.Write(config.VaultPath(), title, body, tags, folder)
 		if werr != nil {
@@ -350,20 +358,39 @@ func dailyNoteTemplate() string {
 `
 }
 
+// handleSync used to only ever sync the Obsidian vault regardless of the
+// configured source — Apple Notes and Joplin were never reachable through
+// the MCP "sync" tool, only via the TUI's "s" key / `notectl sync` CLI.
+// Now branches the same way those do.
 func handleSync(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	ns, err := notes.List(config.VaultPath())
+	var ns []models.Note
+	var err error
+	var srcKey string
+
+	switch config.Source() {
+	case config.SourceApple:
+		ns, err = notes.ListApple(config.AppleFolder())
+		srcKey = "apple"
+	case config.SourceJoplin:
+		ns, err = notes.ListJoplin(config.JoplinFolder())
+		srcKey = "joplin"
+	default:
+		ns, err = notes.List(config.VaultPath())
+		srcKey = "obsidian"
+	}
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+
 	s, err := store.New(config.DBPath(), config.Shared())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	defer s.Close()
 	ctx := context.Background()
-	_ = s.DeleteBySource(ctx, "obsidian")
+	_ = s.DeleteBySource(ctx, srcKey)
 	for i := range ns {
 		_ = s.Upsert(ctx, &ns[i])
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("Synced %d notes from vault", len(ns))), nil
+	return mcp.NewToolResultText(fmt.Sprintf("Synced %d notes from %s", len(ns), srcKey)), nil
 }

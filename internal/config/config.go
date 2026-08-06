@@ -113,6 +113,27 @@ func AppleFolder() string {
 	return viper.GetString("apple_folder") // optional: Apple Notes folder to sync
 }
 
+// JoplinAPIURL is the base URL of Joplin's local Data API (Options → Web
+// Clipper must be enabled in Joplin for this to be reachable).
+func JoplinAPIURL() string {
+	if v := viper.GetString("joplin_api_url"); v != "" {
+		return v
+	}
+	return "http://localhost:41184"
+}
+
+// JoplinToken is the Data API auth token, copied once from Joplin's Options
+// → Web Clipper screen. No default — required for any Joplin source call.
+func JoplinToken() string {
+	return viper.GetString("joplin_token")
+}
+
+// JoplinFolder is the optional notebook (or Parent/Child nested path) to
+// scope sync/list to — empty means all notebooks.
+func JoplinFolder() string {
+	return viper.GetString("joplin_folder")
+}
+
 func configDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "notectl")

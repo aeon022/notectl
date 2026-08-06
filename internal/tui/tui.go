@@ -108,7 +108,7 @@ var sourceTypes = []struct {
 	{config.SourceApple, "Apple Notes", "syncs from Apple Notes via AppleScript"},
 	{config.SourceObsidian, "Obsidian", "reads .md files with YAML frontmatter"},
 	{config.SourceMarkdown, "Markdown", "any folder of plain .md files"},
-	{config.SourceJoplin, "Joplin", "coming soon — Joplin exported notes"},
+	{config.SourceJoplin, "Joplin", "via Joplin's local Data API — needs Joplin running, Web Clipper enabled"},
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -161,9 +161,9 @@ type Model struct {
 	inPalette     bool
 	paletteInput  textinput.Model
 	paletteCursor int
-	folders      []string
-	activeTab    int // 0 = All, 1+ = folder
-	folderCounts map[string]int
+	folders       []string
+	activeTab     int // 0 = All, 1+ = folder
+	folderCounts  map[string]int
 
 	// pendingFolderRestore holds the persisted last-active folder name
 	// (see uistate) until m.folders first loads, resolved to an index and
@@ -2794,6 +2794,9 @@ func doSyncCmd() tea.Cmd {
 		case config.SourceApple:
 			ns, err = notes.ListApple(config.AppleFolder())
 			srcKey = "apple"
+		case config.SourceJoplin:
+			ns, err = notes.ListJoplin(config.JoplinFolder())
+			srcKey = "joplin"
 		default:
 			ns, err = notes.List(config.VaultPath())
 			srcKey = "obsidian"
@@ -2832,11 +2835,16 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 		// file already gone) left the real note/file alive and untracked
 		// while the cache said it was gone. Same bug class fixed in
 		// calctl's DeleteEvent on 2026-08-01.
-		if config.Source() == config.SourceApple {
+		switch {
+		case config.Source() == config.SourceApple:
 			if err := notes.DeleteApple(id); err != nil {
 				return deletedMsg{err}
 			}
-		} else if relPath != "" {
+		case config.Source() == config.SourceJoplin:
+			if err := notes.DeleteJoplin(id); err != nil {
+				return deletedMsg{err}
+			}
+		case relPath != "":
 			if err := notes.Delete(config.VaultPath(), relPath); err != nil {
 				return deletedMsg{err}
 			}
@@ -2866,7 +2874,8 @@ func undoDeleteNoteCmd(n models.Note) tea.Cmd {
 	return func() tea.Msg {
 		var restored *models.Note
 		var err error
-		if config.Source() == config.SourceApple {
+		switch config.Source() {
+		case config.SourceApple:
 			id, werr := notes.WriteApple("", n.Title, notes.TextToHTML(n.Body), n.Folder)
 			if werr != nil {
 				return noteRestoredMsg{err: werr}
@@ -2876,7 +2885,17 @@ func undoDeleteNoteCmd(n models.Note) tea.Cmd {
 				Folder: n.Folder, Source: "apple",
 				ModTime: time.Now(), Created: time.Now(),
 			}
-		} else {
+		case config.SourceJoplin:
+			id, werr := notes.WriteJoplin("", n.Title, n.Body, n.Folder)
+			if werr != nil {
+				return noteRestoredMsg{err: werr}
+			}
+			restored = &models.Note{
+				ID: id, Title: n.Title, Body: n.Body,
+				Folder: n.Folder, Source: "joplin",
+				ModTime: time.Now(), Created: time.Now(),
+			}
+		default:
 			restored, err = notes.Write(config.VaultPath(), n.Title, n.Body, n.Tags, n.Folder)
 			if err != nil {
 				return noteRestoredMsg{err: err}
@@ -2923,7 +2942,8 @@ func writeNoteCmd(id, title, body, tagsStr, folder string, editBlocks []notes.Bl
 		var n *models.Note
 		var err error
 
-		if config.Source() == config.SourceApple {
+		switch config.Source() {
+		case config.SourceApple:
 			plainBody := body
 			if id != "" {
 				// Update path: WriteApple only touches body, and Apple
@@ -2946,7 +2966,18 @@ func writeNoteCmd(id, title, body, tagsStr, folder string, editBlocks []notes.Bl
 				Tags: tags, Folder: folder, Source: "apple",
 				ModTime: time.Now(), Created: time.Now(),
 			}
-		} else {
+		case config.SourceJoplin:
+			var newID string
+			newID, err = notes.WriteJoplin(id, title, body, folder)
+			if err != nil {
+				return writeDoneMsg{err: err}
+			}
+			n = &models.Note{
+				ID: newID, Title: title, Body: body,
+				Tags: tags, Folder: folder, Source: "joplin",
+				ModTime: time.Now(), Created: time.Now(),
+			}
+		default:
 			n, err = notes.Write(config.VaultPath(), title, body, tags, folder)
 			if err != nil {
 				return writeDoneMsg{err: err}

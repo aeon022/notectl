@@ -39,6 +39,23 @@ var syncCmd = &cobra.Command{
 			}
 			fmt.Printf("  %d notes indexed\n", len(ns))
 
+		case config.SourceJoplin:
+			folder := config.JoplinFolder()
+			fmt.Print("Syncing Joplin")
+			if folder != "" {
+				fmt.Printf(" (notebook: %s)", folder)
+			}
+			fmt.Println()
+			ns, jerr := notes.ListJoplin(folder)
+			if jerr != nil {
+				return fmt.Errorf("joplin: %w", jerr)
+			}
+			_ = s.DeleteBySource(ctx, "joplin")
+			for i := range ns {
+				_ = s.Upsert(ctx, &ns[i])
+			}
+			fmt.Printf("  %d notes indexed\n", len(ns))
+
 		default:
 			vault := config.VaultPath()
 			fmt.Printf("Syncing vault: %s\n", vault)
