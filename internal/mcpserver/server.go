@@ -10,6 +10,7 @@ import (
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
+	"github.com/aeon022/notectl/internal/syncdispatch"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -361,36 +362,37 @@ func dailyNoteTemplate() string {
 // handleSync used to only ever sync the Obsidian vault regardless of the
 // configured source — Apple Notes and Joplin were never reachable through
 // the MCP "sync" tool, only via the TUI's "s" key / `notectl sync` CLI.
-// Now branches the same way those do.
+// Now syncs every source in config.SyncSources() (just the active Source()
+// by default), same as those two.
 func handleSync(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var ns []models.Note
-	var err error
-	var srcKey string
-
-	switch config.Source() {
-	case config.SourceApple:
-		ns, err = notes.ListApple(config.AppleFolder())
-		srcKey = "apple"
-	case config.SourceJoplin:
-		ns, err = notes.ListJoplin(config.JoplinFolder())
-		srcKey = "joplin"
-	default:
-		ns, err = notes.List(config.VaultPath())
-		srcKey = "obsidian"
-	}
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-
 	s, err := store.New(config.DBPath(), config.Shared())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	defer s.Close()
 	ctx := context.Background()
-	_ = s.DeleteBySource(ctx, srcKey)
-	for i := range ns {
-		_ = s.Upsert(ctx, &ns[i])
+
+	params := syncdispatch.ParamsFromConfig()
+	var results []string
+	var lastErr error
+	for _, src := range config.SyncSources() {
+		srcKey := syncdispatch.SourceKey(src)
+		ns, err := syncdispatch.List(src, params)
+		if err != nil {
+			results = append(results, fmt.Sprintf("%s: failed (%v)", srcKey, err))
+			lastErr = err
+			continue
+		}
+		_ = s.DeleteBySource(ctx, srcKey)
+		for i := range ns {
+			_ = s.Upsert(ctx, &ns[i])
+		}
+		results = append(results, fmt.Sprintf("%s: %d notes", srcKey, len(ns)))
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("Synced %d notes from %s", len(ns), srcKey)), nil
+
+	summary := strings.Join(results, ", ")
+	if lastErr != nil && len(results) == 1 {
+		return mcp.NewToolResultError(lastErr.Error()), nil
+	}
+	return mcp.NewToolResultText("Synced — " + summary), nil
 }

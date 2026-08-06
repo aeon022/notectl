@@ -21,6 +21,7 @@ import (
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
+	"github.com/aeon022/notectl/internal/syncdispatch"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -2347,15 +2348,28 @@ func (m Model) renderSettings() string {
 	b.WriteString(styleHeader.Render("notectl") + "  " + styleMuted.Render("Settings") + "\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", w)) + "\n\n")
 
-	b.WriteString(styleLabel.Render("Vault:") + "\n")
-	b.WriteString("  " + m.vaultInput.View() + "\n")
-	if strings.HasPrefix(m.vaultInput.Value(), "~") {
-		resolved := config.VaultPath()
-		if _, err := filepath.Abs(resolved); err == nil {
-			b.WriteString(styleMuted.Render("  → "+resolved) + "\n")
+	// Vault path only means anything for Obsidian/Markdown — showing it for
+	// Apple or Joplin was misleading (it looked editable/relevant when it
+	// silently did nothing for either source).
+	selectedSource := sourceTypes[m.sourceIdx].key
+	if selectedSource == config.SourceObsidian || selectedSource == config.SourceMarkdown {
+		b.WriteString(styleLabel.Render("Vault:") + "\n")
+		b.WriteString("  " + m.vaultInput.View() + "\n")
+		if strings.HasPrefix(m.vaultInput.Value(), "~") {
+			resolved := config.VaultPath()
+			if _, err := filepath.Abs(resolved); err == nil {
+				b.WriteString(styleMuted.Render("  → "+resolved) + "\n")
+			}
 		}
+		b.WriteString("\n")
+	} else if selectedSource == config.SourceJoplin {
+		b.WriteString(styleLabel.Render("Joplin:") + "\n")
+		tokenStatus := "not set — see notectl.yaml (joplin_token) or NOTECTL_JOPLIN_TOKEN"
+		if config.JoplinToken() != "" {
+			tokenStatus = "configured"
+		}
+		b.WriteString("  " + styleMuted.Render(config.JoplinAPIURL()+" — token: "+tokenStatus) + "\n\n")
 	}
-	b.WriteString("\n")
 
 	b.WriteString(styleLabel.Render("Source:") + "\n  ")
 	for i, s := range sourceTypes {
@@ -2783,38 +2797,34 @@ func highlightMatches(s string, idxs []int, base lipgloss.Style) string {
 	return b.String()
 }
 
+// doSyncCmd syncs every source configured via config.SyncSources() (just
+// the active Source() by default). One source failing doesn't block the
+// rest — its error is still surfaced, but sources that succeeded are kept.
 func doSyncCmd() tea.Cmd {
 	return func() tea.Msg {
-		src := config.Source()
-		var ns []models.Note
-		var err error
-		var srcKey string
-
-		switch src {
-		case config.SourceApple:
-			ns, err = notes.ListApple(config.AppleFolder())
-			srcKey = "apple"
-		case config.SourceJoplin:
-			ns, err = notes.ListJoplin(config.JoplinFolder())
-			srcKey = "joplin"
-		default:
-			ns, err = notes.List(config.VaultPath())
-			srcKey = "obsidian"
-		}
-		if err != nil {
-			return syncDoneMsg{err: err}
-		}
 		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
 			return syncDoneMsg{err: err}
 		}
 		defer s.Close()
 		ctx := context.Background()
-		_ = s.DeleteBySource(ctx, srcKey)
-		for i := range ns {
-			_ = s.Upsert(ctx, &ns[i])
+
+		params := syncdispatch.ParamsFromConfig()
+		var total int
+		var lastErr error
+		for _, src := range config.SyncSources() {
+			ns, err := syncdispatch.List(src, params)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			_ = s.DeleteBySource(ctx, syncdispatch.SourceKey(src))
+			for i := range ns {
+				_ = s.Upsert(ctx, &ns[i])
+			}
+			total += len(ns)
 		}
-		return syncDoneMsg{count: len(ns)}
+		return syncDoneMsg{count: total, err: lastErr}
 	}
 }
 

@@ -5,14 +5,14 @@ import (
 	"fmt"
 
 	"github.com/aeon022/notectl/internal/config"
-	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
+	"github.com/aeon022/notectl/internal/syncdispatch"
 	"github.com/spf13/cobra"
 )
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sync notes from configured source into local cache",
+	Short: "Sync notes from the configured source(s) into local cache",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
@@ -21,56 +21,41 @@ var syncCmd = &cobra.Command{
 		defer s.Close()
 		ctx := context.Background()
 
-		switch config.Source() {
-		case config.SourceApple:
-			folder := config.AppleFolder()
-			fmt.Print("Syncing Apple Notes")
-			if folder != "" {
-				fmt.Printf(" (folder: %s)", folder)
+		params := syncdispatch.ParamsFromConfig()
+		var lastErr error
+		for _, src := range config.SyncSources() {
+			fmt.Print(syncLabel(src, params))
+			ns, err := syncdispatch.List(src, params)
+			if err != nil {
+				fmt.Printf(" — failed: %v\n", err)
+				lastErr = err
+				continue
 			}
-			fmt.Println()
-			ns, aerr := notes.ListApple(folder)
-			if aerr != nil {
-				return fmt.Errorf("apple notes: %w", aerr)
-			}
-			_ = s.DeleteBySource(ctx, "apple")
+			_ = s.DeleteBySource(ctx, syncdispatch.SourceKey(src))
 			for i := range ns {
 				_ = s.Upsert(ctx, &ns[i])
 			}
-			fmt.Printf("  %d notes indexed\n", len(ns))
-
-		case config.SourceJoplin:
-			folder := config.JoplinFolder()
-			fmt.Print("Syncing Joplin")
-			if folder != "" {
-				fmt.Printf(" (notebook: %s)", folder)
-			}
-			fmt.Println()
-			ns, jerr := notes.ListJoplin(folder)
-			if jerr != nil {
-				return fmt.Errorf("joplin: %w", jerr)
-			}
-			_ = s.DeleteBySource(ctx, "joplin")
-			for i := range ns {
-				_ = s.Upsert(ctx, &ns[i])
-			}
-			fmt.Printf("  %d notes indexed\n", len(ns))
-
-		default:
-			vault := config.VaultPath()
-			fmt.Printf("Syncing vault: %s\n", vault)
-			ns, verr := notes.List(vault)
-			if verr != nil {
-				return fmt.Errorf("vault scan: %w", verr)
-			}
-			_ = s.DeleteBySource(ctx, "obsidian")
-			for i := range ns {
-				_ = s.Upsert(ctx, &ns[i])
-			}
-			fmt.Printf("  %d notes indexed\n", len(ns))
+			fmt.Printf("\n  %d notes indexed\n", len(ns))
 		}
-		return nil
+		return lastErr
 	},
+}
+
+func syncLabel(src config.SourceType, p syncdispatch.Params) string {
+	switch src {
+	case config.SourceApple:
+		if p.AppleFolder != "" {
+			return fmt.Sprintf("Syncing Apple Notes (folder: %s)", p.AppleFolder)
+		}
+		return "Syncing Apple Notes"
+	case config.SourceJoplin:
+		if p.JoplinFolder != "" {
+			return fmt.Sprintf("Syncing Joplin (notebook: %s)", p.JoplinFolder)
+		}
+		return "Syncing Joplin"
+	default:
+		return fmt.Sprintf("Syncing vault: %s", p.VaultPath)
+	}
 }
 
 func init() {

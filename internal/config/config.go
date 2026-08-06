@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	coreconfig "github.com/aeon022/missionctl-core/config"
 	"github.com/aeon022/missionctl-core/licensing"
@@ -45,7 +46,9 @@ func Save(vaultPath string, source SourceType) error {
 	return nil
 }
 
-// Source returns the configured source type (default: obsidian).
+// Source returns the configured source type (default: obsidian). It also
+// remains the single write target — creating a note always needs one
+// unambiguous destination, so this isn't affected by SyncSources below.
 func Source() SourceType {
 	s := SourceType(viper.GetString("source"))
 	switch s {
@@ -54,6 +57,37 @@ func Source() SourceType {
 	default:
 		return SourceObsidian
 	}
+}
+
+// SyncSources returns every source that `sync` should pull from — set via
+// sync_sources: a comma-separated list in config (e.g. "apple,joplin") or
+// NOTECTL_SYNC_SOURCES. Falls back to just [Source()] when unset, so
+// existing single-source setups are unaffected. The local cache already
+// tags rows by source and scopes deletes per-source (DeleteBySource), so
+// multiple sources coexisting there was already safe — this just makes
+// "sync all of them in one go" configurable instead of requiring a
+// temporary NOTECTL_SOURCE override per source.
+func SyncSources() []SourceType {
+	raw := viper.GetString("sync_sources")
+	if raw == "" {
+		return []SourceType{Source()}
+	}
+	var out []SourceType
+	seen := make(map[SourceType]bool)
+	for _, part := range strings.Split(raw, ",") {
+		s := SourceType(strings.TrimSpace(part))
+		switch s {
+		case SourceApple, SourceJoplin, SourceObsidian, SourceMarkdown:
+			if !seen[s] {
+				out = append(out, s)
+				seen[s] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		return []SourceType{Source()}
+	}
+	return out
 }
 
 // VaultPathRaw returns the vault path as stored in config (may contain ~).
