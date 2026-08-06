@@ -1,8 +1,8 @@
 # notectl
 
-Terminal notes client for Obsidian vaults. Part of the [missionctl](https://github.com/aeon022/missionctl) suite.
+Terminal notes client — Obsidian vaults, Apple Notes, or Joplin. Part of the [missionctl](https://github.com/aeon022/missionctl) suite.
 
-Syncs markdown files to a local SQLite cache, exposes a fast full-screen TUI, and runs an MCP server so AI agents can read and write your notes.
+Syncs notes from your chosen source (or several at once) to a local SQLite cache, exposes a fast full-screen TUI, and runs an MCP server so AI agents can read and write your notes.
 
 ---
 
@@ -280,14 +280,18 @@ Config file: `~/.config/notectl/notectl.yaml`
 
 ```yaml
 vault_path: ~/Documents/ObsidianVault
-source: obsidian   # obsidian | apple | markdown
+source: obsidian   # obsidian | apple | markdown | joplin
 ```
 
 | Key | Description |
 |-----|-------------|
 | `vault_path` | Absolute or `~`-prefixed path to the vault root |
-| `source` | Vault type: `obsidian` (default), `apple` (Apple Notes export), `markdown` (plain folder) |
+| `source` | Where notes are read/written: `obsidian` (default), `apple` (Apple Notes), `markdown` (plain folder), `joplin` (via Joplin's Data API — see below) |
+| `sync_sources` | Comma-separated list, e.g. `apple,joplin` — sync several sources into one combined cache at once. Doesn't change where new notes are *written*; that's still whatever `source` is set to. Defaults to just `[source]` when unset. |
 | `data_dir` | Directory for notectl's own SQLite index — set this to sync it across devices (see below) |
+| `joplin_api_url` | Joplin's local Data API base URL. Default `http://localhost:41184`. |
+| `joplin_token` | Joplin Data API auth token (Options → Web Clipper). Required for `source: joplin` or when `joplin` is in `sync_sources`. |
+| `joplin_folder` | Optional notebook to scope Joplin sync/list to — a name, or `Parent/Child` for a nested one. Empty = every notebook. |
 
 Environment variable override:
 
@@ -321,6 +325,35 @@ When Full Disk Access is enabled, `notectl` can read `NoteStore.sqlite` (`~/Libr
 
 ---
 
+### Joplin (`source: joplin`)
+
+Unlike Apple Notes (AppleScript) and Obsidian (plain files on disk), a standalone tool can't reach into a live Joplin process directly — so this talks to Joplin's **Data API** instead, the same local REST service browser clippers use.
+
+1. In Joplin: **Options → Web Clipper → Enable Web Clipper Service**. Copy the token shown below it.
+2. Set `source: joplin` and `joplin_token` in `~/.config/notectl/notectl.yaml` (or `NOTECTL_SOURCE`/`NOTECTL_JOPLIN_TOKEN`).
+3. `notectl doctor` confirms it's reachable before you rely on it.
+
+```yaml
+source: joplin
+joplin_token: <token from Joplin's Web Clipper settings>
+joplin_folder: MISSIONCTL/Marketing   # optional — a notebook, or Parent/Child for a nested one
+```
+
+Joplin must be running with Web Clipper enabled for any Joplin operation to work — `notectl` fails with a clear message (not a silent no-op) if it isn't reachable. Creating a note in a notebook that doesn't exist yet creates it automatically, including nested `Parent/Child` paths.
+
+### Syncing multiple sources at once
+
+`sync_sources` pulls from several sources into one combined, browsable cache in a single `notectl sync` — useful if you want your Apple Notes and Joplin notebooks searchable together, for example:
+
+```yaml
+source: apple          # still the only write target — new notes always go here
+sync_sources: apple,joplin
+joplin_token: <token>
+```
+
+The cache tags each note by its real source and only clears/re-indexes that source's rows per sync, so combining sources here is safe — nothing from one source gets clobbered by syncing another. `source` itself is unaffected: it's still the one place `write`/`write_note`/the TUI's `n` create a new note.
+
+---
 
 ## MCP — AI Integration
 
@@ -380,18 +413,18 @@ Claude calls `get_daily_note` (creating it from the template if today's note is 
 ## Architecture
 
 ```
-Obsidian vault (.md files)
-    |-- notectl sync --> SQLite (~/.local/share/notectl/notes.db)
-                              |-- notectl tui   (Bubbletea full-screen TUI)
-                              |-- notectl mcp   (stdio MCP server for AI agents)
+Obsidian vault (.md files)  ─┐
+Apple Notes (AppleScript)   ─┼─ notectl sync --> SQLite (~/.local/share/notectl/notes.db)
+Joplin (local Data API)     ─┘                        |-- notectl tui   (Bubbletea full-screen TUI)
+                                                        |-- notectl mcp   (stdio MCP server for AI agents)
 ```
 
-The vault is the source of truth. The SQLite cache is a read/write mirror: reads are served from the cache for speed; writes go to the vault first and are reflected in the cache on the next sync (or immediately when written via the TUI or CLI).
+Each configured source is the source of truth for its own notes. The SQLite cache is a read/write mirror, tagged per source: reads are served from the cache for speed; writes go to the real source first (the vault file, Apple Notes, or Joplin — whichever `source` points at) and are reflected in the cache on the next sync, or immediately when written via the TUI or CLI. `sync_sources` can combine more than one source's notes into the same cache — see [Syncing multiple sources at once](#syncing-multiple-sources-at-once).
 
 ---
 
 ## Requirements
 
-- macOS or Linux
+- macOS or Linux (Apple Notes requires macOS; Obsidian, Joplin, and plain Markdown work on both)
 - Go 1.21+
-- An Obsidian vault, or any folder of `.md` files
+- One of: an Obsidian vault (or any folder of `.md` files), Apple Notes, or a running Joplin instance with Web Clipper enabled
