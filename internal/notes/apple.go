@@ -10,7 +10,14 @@ import (
 	"github.com/aeon022/notectl/internal/models"
 )
 
-// ListApple returns all notes from Apple Notes (optionally filtered by folder).
+// ListApple returns all notes from Apple Notes (optionally filtered by
+// folder — the leaf folder name, matching this script's own fName equality
+// check; see appleFolderParents for why full "Parent/Child" paths aren't
+// resolved here). Every note's Folder field comes back as a full path
+// (e.g. "Projects/Git") when it sits in a subfolder, built by pairing the
+// flat per-note scan below with a separate, cheap folder→parent scan —
+// AppleScript's "every folder" already returns nested folders, but only
+// ever exposes their own leaf name, never their container.
 func ListApple(folder string) ([]models.Note, error) {
 	folderFilter := ""
 	if folder != "" {
@@ -29,7 +36,7 @@ tell application "Notes"
 					set nID to id of n
 					set nName to name of n
 					set nMod to modification date of n
-					
+
 					set yr to year of nMod as string
 					set mo to text -2 thru -1 of ("0" & ((month of nMod as integer) as string))
 					set dy to text -2 thru -1 of ("0" & (day of nMod as string))
@@ -38,7 +45,7 @@ tell application "Notes"
 					set sc to text -2 thru -1 of ("0" & (seconds of nMod as string))
 					set nModStr to yr & "-" & mo & "-" & dy & "T" & hr & ":" & mn & ":" & sc
 					set nBody to body of n
-					
+
 					set output to output & "ID:" & nID & linefeed
 					set output to output & "TITLE:" & nName & linefeed
 					set output to output & "FOLDER:" & fName & linefeed
@@ -56,7 +63,81 @@ end tell
 	if err != nil {
 		return nil, err
 	}
-	return parseAppleNotes(out), nil
+	notes := parseAppleNotes(out)
+	if parents, perr := appleFolderParents(); perr == nil {
+		for i := range notes {
+			notes[i].Folder = appleFolderPath(notes[i].Folder, parents)
+		}
+	}
+	return notes, nil
+}
+
+// appleFolderParents returns, for every Apple Notes folder, its immediate
+// parent folder's leaf name — or "" if it sits directly under an account
+// (i.e. it's a top-level folder, not a real subfolder). Keyed by leaf name
+// like the rest of this file's folder handling; two folders that share a
+// name under different parents/accounts are already indistinguishable
+// elsewhere in this integration (FOLDER: only ever carries the leaf name),
+// so this doesn't introduce a new ambiguity, just inherits the existing one.
+func appleFolderParents() (map[string]string, error) {
+	script := `
+tell application "Notes"
+	set output to ""
+	set folderList to every folder
+	repeat with f in folderList
+		set fName to name of f
+		set pName to ""
+		try
+			set c to container of f
+			if (class of c) is folder then
+				set pName to name of c
+			end if
+		end try
+		set output to output & fName & tab & pName & linefeed
+	end repeat
+	return output
+end tell
+`
+	out, err := runAppleScript(script)
+	if err != nil {
+		return nil, err
+	}
+	parents := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimRight(line, "\r"); line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 2)
+		if len(fields) != 2 {
+			continue
+		}
+		parents[fields[0]] = fields[1]
+	}
+	return parents, nil
+}
+
+// appleFolderPath walks the parent chain built by appleFolderParents and
+// joins it into a "Parent/Child" path, e.g. "Git" under "Projects" becomes
+// "Projects/Git". A folder with no parent (or one missing from the map)
+// returns unchanged. seen guards against a cyclical container chain — not
+// expected from real Notes.app data, but cheap to rule out.
+func appleFolderPath(leaf string, parents map[string]string) string {
+	if leaf == "" {
+		return leaf
+	}
+	segs := []string{leaf}
+	cur := leaf
+	seen := map[string]bool{leaf: true}
+	for {
+		p := parents[cur]
+		if p == "" || seen[p] {
+			break
+		}
+		segs = append([]string{p}, segs...)
+		seen[p] = true
+		cur = p
+	}
+	return strings.Join(segs, "/")
 }
 
 // rawAppleID strips the "apple-" prefix models.Note.ID carries, recovering
@@ -113,11 +194,7 @@ end tell
 	target := "default account"
 	folderSetup := ""
 	if folder != "" {
-		target = fmt.Sprintf(`folder "%s"`, escapeAS(folder))
-		folderSetup = fmt.Sprintf(`
-	if not (exists folder "%s") then
-		make new folder with properties {name:"%s"}
-	end if`, escapeAS(folder), escapeAS(folder))
+		folderSetup, target = appleFolderRefChain(folder)
 	}
 	fullBody := "<div>" + htmlEscape(title) + "</div><div><br></div>" + htmlBody
 	createScript := fmt.Sprintf(`
@@ -131,6 +208,40 @@ end tell
 		return "", err
 	}
 	return "apple-" + strings.TrimSpace(out), nil
+}
+
+// appleFolderRefChain turns a folder path like "Projects/Git" into an
+// AppleScript snippet that creates every missing level (top-level "Projects"
+// first, then "Git" inside it) and an AppleScript expression referring to
+// the deepest one — for a single-segment path this reduces to exactly the
+// old flat "if not (exists folder X) then make new folder..." behavior.
+func appleFolderRefChain(path string) (setupScript, targetRef string) {
+	containerRef := ""
+	var b strings.Builder
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" {
+			continue
+		}
+		esc := escapeAS(seg)
+		var existsExpr, refExpr, atClause string
+		if containerRef == "" {
+			existsExpr = fmt.Sprintf(`exists folder "%s"`, esc)
+			refExpr = fmt.Sprintf(`folder "%s"`, esc)
+		} else {
+			existsExpr = fmt.Sprintf(`exists folder "%s" of %s`, esc, containerRef)
+			refExpr = fmt.Sprintf(`folder "%s" of %s`, esc, containerRef)
+			atClause = fmt.Sprintf(" at %s", containerRef)
+		}
+		b.WriteString(fmt.Sprintf(`
+	if not (%s) then
+		make new folder%s with properties {name:"%s"}
+	end if`, existsExpr, atClause, esc))
+		containerRef = refExpr
+	}
+	if containerRef == "" {
+		return "", "default account"
+	}
+	return b.String(), containerRef
 }
 
 // ListAppleFolders returns all folder names from Apple Notes.

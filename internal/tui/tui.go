@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aeon022/missionctl-core/humanize"
 	"github.com/aeon022/missionctl-core/keymap"
 	"github.com/aeon022/missionctl-core/lastsync"
 	"github.com/aeon022/missionctl-core/overlay"
@@ -83,6 +82,19 @@ var (
 			Foreground(lipgloss.AdaptiveColor{Light: "237", Dark: "252"}).
 			Background(colorTabBg).
 			Padding(0, 3)
+	// styleTabActiveDim marks the row-1 tab whose sub-notebook is active in
+	// row 2 — still "selected" (bold, tinted) but visually receded since one
+	// of its children (row 2) is the actual current focus.
+	styleTabActiveDim = lipgloss.NewStyle().Bold(true).
+				Foreground(colorBlue).
+				Background(colorTabBg).
+				Padding(0, 3)
+	// Row 2 (sub-notebooks) is deliberately plain text, not filled pills —
+	// its contents change with every parent and read better as a
+	// lightweight breadcrumb than another row of buttons.
+	styleTabParentRef = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
+	styleSubInact     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "241", Dark: "249"})
+	styleSubActive    = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(colorBlue)
 
 	// markdown
 	styleMDH1    = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
@@ -162,13 +174,22 @@ type Model struct {
 	inPalette     bool
 	paletteInput  textinput.Model
 	paletteCursor int
-	folders       []string
-	activeTab     int // 0 = All, 1+ = folder
+	folders       []string // flat, full-path folders as stored on notes (e.g. "Projects/Git")
 	folderCounts  map[string]int
 
-	// pendingFolderRestore holds the persisted last-active folder name
-	// (see uistate) until m.folders first loads, resolved to an index and
-	// cleared then — same one-shot pattern as openPath below.
+	// Two-row notebook tabs — see tabs.go. topFolders/subFolders are
+	// derived from folders each time it loads (buildFolderTree). tabCursor
+	// indexes the flattened tab/shift+tab sequence (tabPositions): "All",
+	// then each top-level notebook immediately followed by its own
+	// children, in order.
+	topFolders []string            // top-level notebooks, row 1 (index 0 = "All")
+	subFolders map[string][]string // top-level name -> its children's full paths, row 2
+	tabCursor  int                 // index into tabPositions()
+	tabScroll  int                 // first visible row-1 tab, kept in view by ensureTabVisible
+
+	// pendingFolderRestore holds the persisted last-active folder path
+	// (see uistate) until m.folders first loads, resolved to a tab
+	// position and cleared then — same one-shot pattern as openPath below.
 	pendingFolderRestore string
 
 	// tag browser ("t")
@@ -352,10 +373,15 @@ func loadLastSyncedCmd() tea.Cmd {
 }
 
 func (m Model) activeFolder() string {
-	if m.activeTab == 0 || m.activeTab >= len(m.folders)+1 {
+	pos := m.currentPos()
+	if pos.top == 0 || pos.top > len(m.topFolders) {
 		return ""
 	}
-	return m.folders[m.activeTab-1]
+	top := m.topFolders[pos.top-1]
+	if kids := m.subFolders[top]; pos.sub >= 0 && pos.sub < len(kids) {
+		return kids[pos.sub]
+	}
+	return top
 }
 
 func (m Model) isTwoPane() bool { return m.width >= 100 }
@@ -392,6 +418,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pvp = viewport.New(m.pvpWidth(), m.height-3)
 		m.bodyArea.SetWidth(m.editorBodyWidth())
 		m.bodyArea.SetHeight(m.height - 11)
+		m.ensureTabVisible()
 
 	case notesLoadedMsg:
 		m.loading = false
@@ -407,17 +434,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allNotes = msg.notes
 		m.notes = filterNotes(m.allNotes, m.searchQ)
 		m.folders = msg.folders
+		m.topFolders, m.subFolders = buildFolderTree(msg.folders)
 		if msg.folderCounts != nil {
 			m.folderCounts = msg.folderCounts
 		}
 		if m.pendingFolderRestore != "" {
 			restore := m.pendingFolderRestore
 			m.pendingFolderRestore = ""
-			for i, f := range m.folders {
-				if f == restore {
-					m.activeTab = i + 1
-					return m, loadNotesCmd(restore)
-				}
+			if cursor, ok := m.resolveTabCursor(restore); ok {
+				m.tabCursor = cursor
+				m.ensureTabVisible()
+				return m, loadNotesCmd(restore)
 			}
 		}
 		// Try to restore cursor to the same note by ID.
@@ -600,9 +627,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.view != viewList || msg.Action != tea.MouseActionPress {
 				return m, nil
 			}
-			if i := m.tabHitTest(msg.X, msg.Y); i >= 0 {
-				if i != m.activeTab {
-					m.activeTab = i
+			if row, i := m.tabHitTest(msg.X, msg.Y); row >= 0 {
+				var newCursor int
+				if row == 0 {
+					newCursor = m.cursorFor(i, -1)
+				} else {
+					newCursor = m.cursorFor(m.currentPos().top, i)
+				}
+				if newCursor != m.tabCursor {
+					m.tabCursor = newCursor
+					m.ensureTabVisible()
 					m.cursor = 0
 					m.saveUIState()
 					return m, loadNotesCmd(m.activeFolder())
@@ -800,14 +834,18 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "tab":
-		tabs := len(m.folders) + 1
-		m.activeTab = (m.activeTab + 1) % tabs
+		if n := len(m.tabPositions()); n > 0 {
+			m.tabCursor = (m.tabCursor + 1) % n
+		}
+		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.activeFolder())
 	case "shift+tab":
-		tabs := len(m.folders) + 1
-		m.activeTab = (m.activeTab - 1 + tabs) % tabs
+		if n := len(m.tabPositions()); n > 0 {
+			m.tabCursor = (m.tabCursor - 1 + n) % n
+		}
+		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.activeFolder())
@@ -1639,8 +1677,8 @@ func (m Model) helpContent() string {
 		Row("j / k", "move down / up").
 		Row("g / G", "jump to top / bottom").
 		Row("pgdn/up", "page down / up").
-		Row("tab", "next folder").
-		Row("s-tab", "previous folder").
+		Row("tab", "next notebook (walks into sub-notebooks, then the next one)").
+		Row("s-tab", "previous notebook").
 		Row("< / >", "resize panes (two-pane layout)").
 		Row(":", "command palette — type an action by name").
 		Section("Notes").
@@ -1741,7 +1779,10 @@ func (m Model) renderPaletteBlock() string {
 func (m Model) renderSinglePane() string {
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	b.WriteString(" " + m.renderTabBar(m.width-1) + "\n")
+	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
+	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
+		b.WriteString(row2 + "\n")
+	}
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 
 	if m.searching {
@@ -1785,7 +1826,10 @@ func (m Model) renderTwoPane() string {
 
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	b.WriteString(" " + m.renderTabBar(m.width-1) + "\n")
+	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
+	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
+		b.WriteString(row2 + "\n")
+	}
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 
 	// search row replaces one line of the pane
@@ -1923,14 +1967,25 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 	return lines, cursorLine, lineToNote
 }
 
+// preambleRows returns the fixed-height chrome above the note list: app
+// header + row-1 notebook tabs + (if the active notebook has children)
+// row-2 sub-notebook tabs + the divider line.
+func (m Model) preambleRows() int {
+	y := 3 // header + tab row 1 + divider
+	if len(m.activeChildren()) > 0 {
+		y++ // tab row 2
+	}
+	return y
+}
+
 // listStartY returns the number of preamble lines above the note list —
-// header, tab bar, divider, and (mode-dependent) an optional search
+// header, tab bar(s), divider, and (mode-dependent) an optional search
 // input/filter chip — shared by the render paths and rowHitTest so they
 // can't drift apart. Two-pane's search row costs 1 line (no trailing
 // blank, no separate filter chip line); single-pane's costs 2 plus an
 // optional filter chip line.
 func (m Model) listStartY() int {
-	y := 3 // header + tab bar + divider
+	y := m.preambleRows()
 	if m.isTwoPane() {
 		if m.searching {
 			y++
@@ -1956,7 +2011,7 @@ func (m Model) listStartY() int {
 // matching listH (single-pane) / paneH (two-pane) in the render paths.
 func (m Model) listHeight() int {
 	if m.isTwoPane() {
-		h := m.height - 3 - helpBarHeight - 1 // -1: blank padding line above the help bar
+		h := m.height - m.preambleRows() - helpBarHeight - 1 // -1: blank padding line above the help bar
 		if m.searching {
 			h--
 		}
@@ -1973,35 +2028,6 @@ func (m Model) listHeight() int {
 		h = 1
 	}
 	return h
-}
-
-// tabHitTest returns the folder-tab index at column x on the tab bar row
-// (row 1: header is row 0), or -1 if the click didn't land on a tab.
-func (m Model) tabHitTest(x, y int) int {
-	if y != 1 {
-		return -1
-	}
-	tabs := append([]string{"All"}, m.folders...)
-	col := 1 // renderTabBar's line is written with a leading " "
-	for i, t := range tabs {
-		label := t
-		folderKey := t
-		if i == 0 {
-			folderKey = ""
-		}
-		if c := m.folderCounts[folderKey]; c > 0 {
-			label = fmt.Sprintf("%s %d", t, c)
-		}
-		w := lipgloss.Width(styleTabInact.Render(label))
-		if i == m.activeTab {
-			w = lipgloss.Width(styleTabActive.Render(label))
-		}
-		if x >= col && x < col+w {
-			return i
-		}
-		col += w + 2 // "  " join separator
-	}
-	return -1
 }
 
 // rowHitTest returns the m.notes index at screen position (x, y), or -1
@@ -2048,34 +2074,6 @@ func (m Model) renderAppHeader(w int) string {
 	return left + strings.Repeat(" ", pad) + right
 }
 
-func (m Model) renderTabBar(w int) string {
-	tabs := append([]string{"All"}, m.folders...)
-	var parts []string
-	for i, t := range tabs {
-		label := t
-		folderKey := t
-		if i == 0 {
-			folderKey = "" // "All" → total count
-		}
-		if c := m.folderCounts[folderKey]; c > 0 {
-			label = fmt.Sprintf("%s %d", t, c)
-		}
-		if i == m.activeTab {
-			parts = append(parts, styleTabActive.Render(label))
-		} else {
-			parts = append(parts, styleTabInact.Render(label))
-		}
-	}
-	bar := strings.Join(parts, "  ")
-	if m.syncing {
-		bar += "  " + m.sp.View() + styleSyncing.Render(" syncing…")
-	} else if !m.lastSynced.IsZero() {
-		bar += "  " + styleMuted.Render("synced "+humanize.TimeAgo(m.lastSynced))
-	}
-	_ = w
-	return bar
-}
-
 // renderHelpBar renders the bottom help area. The key list is split across
 // two lines — it was one long line that overflowed on typical terminal
 // widths, unlike the other suite tools' shorter footers. An error/status
@@ -2101,7 +2099,7 @@ func (m Model) renderHelpBar(w int) string {
 		return styleOK.Render("✓ " + m.status)
 	}
 	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  u:undo  y:copy  S:sort")
-	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:folder  ?:help  q:quit")
+	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:notebook  ?:help  q:quit")
 	pad := w - lipgloss.Width(line2) - lipgloss.Width(right)
 	if pad < 0 {
 		pad = 0

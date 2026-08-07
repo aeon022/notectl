@@ -157,8 +157,12 @@ func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
 		args = append(args, f.Source)
 	}
 	if f.Folder != "" {
-		q += ` AND folder=?`
-		args = append(args, f.Folder)
+		// Self + descendants: a note directly in "Projects" or anywhere
+		// under "Projects/…" both count as being in the "Projects" tab —
+		// selecting a top-level notebook aggregates its sub-notebooks
+		// rather than showing an empty list when it's a pure container.
+		q += ` AND (folder=? OR folder LIKE ? ESCAPE '\')`
+		args = append(args, f.Folder, likeEscape(f.Folder)+`/%`)
 	}
 	if f.Query != "" {
 		q += ` AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)`
@@ -208,6 +212,12 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+// CountByFolder returns, for every folder path (plus "" for the grand
+// total), the number of notes in it AND in any of its subfolders — a note
+// in "Projects/Git" is counted under "Projects/Git", "Projects", and "".
+// That rollup is what lets a top-level notebook tab show an aggregate count
+// even when it's a pure container with no notes directly inside it,
+// matching List's self+descendants folder filter above.
 func (s *Store) CountByFolder(ctx context.Context) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT folder, COUNT(*) FROM notes GROUP BY folder`)
@@ -215,19 +225,35 @@ func (s *Store) CountByFolder(ctx context.Context) (map[string]int, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	counts := map[string]int{}
 	total := 0
+	counts := map[string]int{}
 	for rows.Next() {
 		var folder string
 		var c int
 		if err := rows.Scan(&folder, &c); err != nil {
 			return nil, err
 		}
-		counts[folder] = c
 		total += c
+		if folder == "" {
+			continue
+		}
+		segs := strings.Split(folder, "/")
+		for i := range segs {
+			counts[strings.Join(segs[:i+1], "/")] += c
+		}
 	}
 	counts[""] = total
 	return counts, rows.Err()
+}
+
+// likeEscape escapes the LIKE wildcard characters ('%', '_') and the
+// backslash escape character itself, so a folder name containing them is
+// matched literally rather than as a pattern.
+func likeEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 func (s *Store) ListFolders(ctx context.Context) ([]string, error) {
