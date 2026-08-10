@@ -16,8 +16,18 @@ import (
 // resolved here). Every note's Folder field comes back as a full path
 // (e.g. "Projects/Git") when it sits in a subfolder, built by pairing the
 // flat per-note scan below with a separate, cheap folder→parent scan —
-// AppleScript's "every folder" already returns nested folders, but only
-// ever exposes their own leaf name, never their container.
+// AppleScript's "folders of <account>" already returns nested folders, but
+// only ever exposes their own leaf name, never their container.
+//
+// The outer loop iterates every account and asks it for its own folders —
+// deliberately not the global "every folder" this used before — because
+// several real accounts share identically-named default top-level folders
+// (a German-locale iCloud-adjacent account's "Notizen" vs. an English one's
+// "Notes"; confirmed live: this machine has 7 accounts, 3 folders named
+// "Notizen" and 4 named "Notes" across them). Scoping the note scan itself
+// to each account's own folder list — rather than naming folders globally
+// and attaching an account after the fact — is what makes the ACCOUNT
+// field below unambiguous even when two accounts' folders collide by name.
 func ListApple(folder string) ([]models.Note, error) {
 	folderFilter := ""
 	if folder != "" {
@@ -26,35 +36,39 @@ func ListApple(folder string) ([]models.Note, error) {
 	script := fmt.Sprintf(`
 tell application "Notes"
 	set output to ""
-	set folderList to every folder
-	repeat with f in folderList
-		set fName to name of f
-		if fName is not "Recently Deleted" and fName is not "Zuletzt gelöscht" then
-			%s
-				set noteList to notes of f
-				repeat with n in noteList
-					set nID to id of n
-					set nName to name of n
-					set nMod to modification date of n
+	repeat with a in every account
+		set aName to name of a
+		set folderList to folders of a
+		repeat with f in folderList
+			set fName to name of f
+			if fName is not "Recently Deleted" and fName is not "Zuletzt gelöscht" then
+				%s
+					set noteList to notes of f
+					repeat with n in noteList
+						set nID to id of n
+						set nName to name of n
+						set nMod to modification date of n
 
-					set yr to year of nMod as string
-					set mo to text -2 thru -1 of ("0" & ((month of nMod as integer) as string))
-					set dy to text -2 thru -1 of ("0" & (day of nMod as string))
-					set hr to text -2 thru -1 of ("0" & (hours of nMod as string))
-					set mn to text -2 thru -1 of ("0" & (minutes of nMod as string))
-					set sc to text -2 thru -1 of ("0" & (seconds of nMod as string))
-					set nModStr to yr & "-" & mo & "-" & dy & "T" & hr & ":" & mn & ":" & sc
-					set nBody to body of n
+						set yr to year of nMod as string
+						set mo to text -2 thru -1 of ("0" & ((month of nMod as integer) as string))
+						set dy to text -2 thru -1 of ("0" & (day of nMod as string))
+						set hr to text -2 thru -1 of ("0" & (hours of nMod as string))
+						set mn to text -2 thru -1 of ("0" & (minutes of nMod as string))
+						set sc to text -2 thru -1 of ("0" & (seconds of nMod as string))
+						set nModStr to yr & "-" & mo & "-" & dy & "T" & hr & ":" & mn & ":" & sc
+						set nBody to body of n
 
-					set output to output & "ID:" & nID & linefeed
-					set output to output & "TITLE:" & nName & linefeed
-					set output to output & "FOLDER:" & fName & linefeed
-					set output to output & "MODTIME:" & nModStr & linefeed
-					set output to output & "BODY:" & nBody & linefeed
-					set output to output & "---NOTE---" & linefeed
-				end repeat
-			%s
-		end if
+						set output to output & "ID:" & nID & linefeed
+						set output to output & "TITLE:" & nName & linefeed
+						set output to output & "FOLDER:" & fName & linefeed
+						set output to output & "ACCOUNT:" & aName & linefeed
+						set output to output & "MODTIME:" & nModStr & linefeed
+						set output to output & "BODY:" & nBody & linefeed
+						set output to output & "---NOTE---" & linefeed
+					end repeat
+				%s
+			end if
+		end repeat
 	end repeat
 	return output
 end tell
@@ -939,6 +953,8 @@ func parseAppleNotes(out string) []models.Note {
 				n.Title = strings.TrimPrefix(line, "TITLE:")
 			case strings.HasPrefix(line, "FOLDER:"):
 				n.Folder = strings.TrimPrefix(line, "FOLDER:")
+			case strings.HasPrefix(line, "ACCOUNT:"):
+				n.Account = strings.TrimPrefix(line, "ACCOUNT:")
 			case strings.HasPrefix(line, "MODTIME:"):
 				t, _ := time.ParseInLocation("2006-01-02T15:04:05",
 					strings.TrimPrefix(line, "MODTIME:"), time.Local)

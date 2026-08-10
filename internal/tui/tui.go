@@ -127,9 +127,11 @@ var sourceTypes = []struct {
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 type notesLoadedMsg struct {
-	notes        []models.Note
-	folders      []string
-	folderCounts map[string]int
+	notes         []models.Note
+	folders       []string
+	folderCounts  map[string]int
+	accounts      []string
+	accountCounts map[string]int
 }
 type noteRestoredMsg struct {
 	note *models.Note
@@ -187,10 +189,23 @@ type Model struct {
 	tabCursor  int                 // index into tabPositions()
 	tabScroll  int                 // first visible row-1 tab, kept in view by ensureTabVisible
 
+	// Account row (row 0) — Apple Notes only, e.g. "iCloud", "FH
+	// Burgenland". Only rendered when len(accounts) > 1: a single account
+	// (or an obsidian vault, which has no account concept at all) has
+	// nothing to disambiguate, so the row is just skipped rather than
+	// shown with one meaningless entry. tab/shift+tab drive whichever row
+	// rowFocus currently points at; "["/"]" switch which one that is.
+	accounts      []string // distinct accounts, row 0 (index 0 = "All accounts")
+	accountCounts map[string]int
+	accountCursor int // index into accountPositions()
+	accountScroll int // first visible account tab, kept in view by ensureAccountVisible
+	rowFocus      rowFocus
+
 	// pendingFolderRestore holds the persisted last-active folder path
 	// (see uistate) until m.folders first loads, resolved to a tab
 	// position and cleared then — same one-shot pattern as openPath below.
-	pendingFolderRestore string
+	pendingFolderRestore  string
+	pendingAccountRestore string // same idea, for the persisted active account
 
 	// tag browser ("t")
 	tagCursor int
@@ -324,32 +339,37 @@ func New(openPath string) Model {
 	uistate.Load(config.UIStatePath(), &state)
 
 	return Model{
-		sp:                   sp,
-		searchInput:          si,
-		paletteInput:         pi,
-		titleInput:           ti,
-		tagsInput:            tags,
-		bodyArea:             body,
-		vaultInput:           vi,
-		sourceIdx:            srcIdx,
-		sortByDate:           true,
-		paneRatio:            0.38,
-		loading:              true,
-		hoverRow:             -1,
-		lastClickRow:         -1,
-		openPath:             openPath,
-		pendingFolderRestore: state.LastFolder,
+		sp:                    sp,
+		searchInput:           si,
+		paletteInput:          pi,
+		titleInput:            ti,
+		tagsInput:             tags,
+		bodyArea:              body,
+		vaultInput:            vi,
+		sourceIdx:             srcIdx,
+		sortByDate:            true,
+		paneRatio:             0.38,
+		loading:               true,
+		hoverRow:              -1,
+		lastClickRow:          -1,
+		openPath:              openPath,
+		pendingFolderRestore:  state.LastFolder,
+		pendingAccountRestore: state.LastAccount,
 	}
 }
 
 // persistedState is what New() restores from and saveUIState saves to — see
 // missionctl-core/uistate.
 type persistedState struct {
-	LastFolder string `json:"last_folder"`
+	LastFolder  string `json:"last_folder"`
+	LastAccount string `json:"last_account"`
 }
 
 func (m Model) saveUIState() {
-	_ = uistate.Save(config.UIStatePath(), persistedState{LastFolder: m.activeFolder()})
+	_ = uistate.Save(config.UIStatePath(), persistedState{
+		LastFolder:  m.activeFolder(),
+		LastAccount: m.activeAccount(),
+	})
 }
 
 func Run(openPath string) error {
@@ -360,7 +380,7 @@ func Run(openPath string) error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadNotesCmd(""), doSyncCmd(), tea.WindowSize(), m.sp.Tick, loadLastSyncedCmd())
+	return tea.Batch(loadNotesCmd("", ""), doSyncCmd(), tea.WindowSize(), m.sp.Tick, loadLastSyncedCmd())
 }
 
 type lastSyncedLoadedMsg struct{ t time.Time }
@@ -419,6 +439,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bodyArea.SetWidth(m.editorBodyWidth())
 		m.bodyArea.SetHeight(m.height - 11)
 		m.ensureTabVisible()
+		m.ensureAccountVisible()
 
 	case notesLoadedMsg:
 		m.loading = false
@@ -438,13 +459,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.folderCounts != nil {
 			m.folderCounts = msg.folderCounts
 		}
+		m.accounts = msg.accounts
+		if msg.accountCounts != nil {
+			m.accountCounts = msg.accountCounts
+		}
+		if m.pendingAccountRestore != "" {
+			restore := m.pendingAccountRestore
+			m.pendingAccountRestore = ""
+			if cursor, ok := m.resolveAccountCursor(restore); ok {
+				m.accountCursor = cursor
+				m.ensureAccountVisible()
+				// Re-fetch scoped to the restored account before resolving
+				// pendingFolderRestore below — msg.folders here is still
+				// the unscoped (or wrong-account) tree from before this
+				// account was known, so a tab cursor resolved against it
+				// would land on the wrong notebook.
+				return m, loadNotesCmd(restore, m.pendingFolderRestore)
+			}
+		}
 		if m.pendingFolderRestore != "" {
 			restore := m.pendingFolderRestore
 			m.pendingFolderRestore = ""
 			if cursor, ok := m.resolveTabCursor(restore); ok {
 				m.tabCursor = cursor
 				m.ensureTabVisible()
-				return m, loadNotesCmd(restore)
+				return m, loadNotesCmd(m.activeAccount(), restore)
 			}
 		}
 		// Try to restore cursor to the same note by ID.
@@ -491,7 +530,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(fmt.Sprintf("Synced %d notes", msg.count))
 			m.lastSynced = time.Now()
 			_ = lastsync.Save(config.LastSyncedPath(), m.lastSynced)
-			return m, loadNotesCmd(m.activeFolder())
+			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 		}
 
 	case writeDoneMsg:
@@ -504,7 +543,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.setStatus("Saved: " + name)
 			m.view = viewList
-			return m, loadNotesCmd(m.activeFolder())
+			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 		}
 
 	case noteRestoredMsg:
@@ -516,7 +555,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				name = msg.note.Title
 			}
 			m.setStatus("Restored: " + name)
-			return m, loadNotesCmd(m.activeFolder())
+			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 		}
 
 	case deletedMsg:
@@ -530,7 +569,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatus("Settings saved")
 			m.view = viewList
-			return m, loadNotesCmd(m.activeFolder())
+			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 		}
 
 	case appleBodyMsg:
@@ -628,8 +667,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if row, i := m.tabHitTest(msg.X, msg.Y); row >= 0 {
+				if row == 0 { // account row
+					m.rowFocus = focusAccount
+					if i != m.accountCursor {
+						m.accountCursor = i
+						m.ensureAccountVisible()
+						m.tabCursor = 0
+						m.ensureTabVisible()
+						m.cursor = 0
+						m.saveUIState()
+						return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+					}
+					return m, nil
+				}
+				m.rowFocus = focusNotebook
 				var newCursor int
-				if row == 0 {
+				if row == 1 {
 					newCursor = m.cursorFor(i, -1)
 				} else {
 					newCursor = m.cursorFor(m.currentPos().top, i)
@@ -639,7 +692,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ensureTabVisible()
 					m.cursor = 0
 					m.saveUIState()
-					return m, loadNotesCmd(m.activeFolder())
+					return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 				}
 				return m, nil
 			}
@@ -834,21 +887,41 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "tab":
-		if n := len(m.tabPositions()); n > 0 {
+		if m.rowFocus == focusAccount {
+			if n := len(m.accounts) + 1; n > 0 {
+				m.accountCursor = (m.accountCursor + 1) % n
+			}
+			m.ensureAccountVisible()
+			m.tabCursor = 0
+			m.ensureTabVisible()
+		} else if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor + 1) % n
+			m.ensureTabVisible()
 		}
-		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
-		return m, loadNotesCmd(m.activeFolder())
+		return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 	case "shift+tab":
-		if n := len(m.tabPositions()); n > 0 {
+		if m.rowFocus == focusAccount {
+			if n := len(m.accounts) + 1; n > 0 {
+				m.accountCursor = (m.accountCursor - 1 + n) % n
+			}
+			m.ensureAccountVisible()
+			m.tabCursor = 0
+			m.ensureTabVisible()
+		} else if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor - 1 + n) % n
+			m.ensureTabVisible()
 		}
-		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
-		return m, loadNotesCmd(m.activeFolder())
+		return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+	case "[":
+		if m.showAccountRow() {
+			m.rowFocus = focusAccount
+		}
+	case "]":
+		m.rowFocus = focusNotebook
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		// jump to the nth visible (on-screen) note, date-group headers not
 		// counted — mirrors rowHitTest's own scroll-window math so a digit
@@ -1677,8 +1750,9 @@ func (m Model) helpContent() string {
 		Row("j / k", "move down / up").
 		Row("g / G", "jump to top / bottom").
 		Row("pgdn/up", "page down / up").
-		Row("tab", "next notebook (walks into sub-notebooks, then the next one)").
-		Row("s-tab", "previous notebook").
+		Row("tab", "next notebook (walks into sub-notebooks, then the next one) — or next account, if [ is focused there").
+		Row("s-tab", "previous notebook / previous account").
+		Row("[ / ]", "focus the account row / back to the notebook row (only when >1 account)").
 		Row("< / >", "resize panes (two-pane layout)").
 		Row(":", "command palette — type an action by name").
 		Section("Notes").
@@ -1779,6 +1853,9 @@ func (m Model) renderPaletteBlock() string {
 func (m Model) renderSinglePane() string {
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
+	if m.showAccountRow() {
+		b.WriteString(" " + m.renderTabRow0(m.width-1) + "\n")
+	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -1826,6 +1903,9 @@ func (m Model) renderTwoPane() string {
 
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
+	if m.showAccountRow() {
+		b.WriteString(" " + m.renderTabRow0(m.width-1) + "\n")
+	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -1972,6 +2052,9 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 // row-2 sub-notebook tabs + the divider line.
 func (m Model) preambleRows() int {
 	y := 3 // header + tab row 1 + divider
+	if m.showAccountRow() {
+		y++ // tab row 0 (accounts)
+	}
 	if len(m.activeChildren()) > 0 {
 		y++ // tab row 2
 	}
@@ -2683,7 +2766,7 @@ func formatMarkdownTable(lines []string, width ...int) []string {
 // previous behavior). Store.Filter.Query / the SQL LIKE path still exists
 // and is still used by `notectl search` and the MCP search tool, just not
 // from here anymore.
-func loadNotesCmd(folder string) tea.Cmd {
+func loadNotesCmd(account, folder string) tea.Cmd {
 	return func() tea.Msg {
 		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
@@ -2691,13 +2774,23 @@ func loadNotesCmd(folder string) tea.Cmd {
 		}
 		defer s.Close()
 		ctx := context.Background()
-		ns, err := s.List(ctx, store.Filter{Folder: folder, Limit: 500})
+		ns, err := s.List(ctx, store.Filter{Account: account, Folder: folder, Limit: 500})
 		if err != nil {
 			return errMsg{err}
 		}
-		folders, _ := s.ListFolders(ctx)
-		counts, _ := s.CountByFolder(ctx)
-		return notesLoadedMsg{notes: ns, folders: folders, folderCounts: counts}
+		var folders []string
+		if account != "" {
+			folders, _ = s.ListFoldersByAccount(ctx, account)
+		} else {
+			folders, _ = s.ListFolders(ctx)
+		}
+		counts, _ := s.CountByFolder(ctx, account)
+		accounts, _ := s.ListAccounts(ctx)
+		accountCounts, _ := s.CountByAccount(ctx)
+		return notesLoadedMsg{
+			notes: ns, folders: folders, folderCounts: counts,
+			accounts: accounts, accountCounts: accountCounts,
+		}
 	}
 }
 

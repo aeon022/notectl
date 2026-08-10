@@ -120,21 +120,54 @@ func (s *Store) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_notes_folder  ON notes(folder);
 		CREATE INDEX IF NOT EXISTS idx_notes_modtime ON notes(mod_time);
 	`)
+	if err != nil {
+		return err
+	}
+	return s.addColumnIfMissing("notes", "account", "TEXT NOT NULL DEFAULT ''")
+}
+
+// addColumnIfMissing ALTERs table to add column (with the given type/
+// constraint clause) if it doesn't already exist — for existing databases
+// created before that column was introduced. CREATE TABLE IF NOT EXISTS
+// above only helps on a brand-new DB; a pre-existing one needs its own
+// column added explicitly since sqlite has no ADD COLUMN IF NOT EXISTS.
+func (s *Store) addColumnIfMissing(table, column, def string) error {
+	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, def))
 	return err
 }
 
 func (s *Store) Upsert(ctx context.Context, n *models.Note) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO notes (id,title,body,tags,folder,path,source,mod_time,created,synced_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO notes (id,title,body,tags,folder,account,path,source,mod_time,created,synced_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title, body=excluded.body,
-			tags=excluded.tags, folder=excluded.folder,
+			tags=excluded.tags, folder=excluded.folder, account=excluded.account,
 			mod_time=excluded.mod_time, synced_at=excluded.synced_at
 	`,
 		n.ID, n.Title, n.Body,
 		strings.Join(n.Tags, ","),
-		n.Folder, n.Path, n.Source,
+		n.Folder, n.Account, n.Path, n.Source,
 		n.ModTime.UTC().Format(time.RFC3339),
 		n.Created.UTC().Format(time.RFC3339),
 		time.Now().UTC().Format(time.RFC3339),
@@ -143,24 +176,32 @@ func (s *Store) Upsert(ctx context.Context, n *models.Note) error {
 }
 
 type Filter struct {
-	Source string
-	Folder string
-	Query  string
-	Limit  int
+	Source  string
+	Account string
+	Folder  string
+	Query   string
+	Limit   int
 }
 
 func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
-	q := `SELECT id,title,body,tags,folder,path,source,mod_time,created FROM notes WHERE 1=1`
+	q := `SELECT id,title,body,tags,folder,account,path,source,mod_time,created FROM notes WHERE 1=1`
 	var args []any
 	if f.Source != "" {
 		q += ` AND source=?`
 		args = append(args, f.Source)
+	}
+	if f.Account != "" {
+		q += ` AND account=?`
+		args = append(args, f.Account)
 	}
 	if f.Folder != "" {
 		// Self + descendants: a note directly in "Projects" or anywhere
 		// under "Projects/…" both count as being in the "Projects" tab —
 		// selecting a top-level notebook aggregates its sub-notebooks
 		// rather than showing an empty list when it's a pure container.
+		// Scoped by account too (when given): different accounts can have
+		// identically-named top-level folders (e.g. two "Notizen"), and
+		// without the account filter this would silently mix them.
 		q += ` AND (folder=? OR folder LIKE ? ESCAPE '\')`
 		args = append(args, f.Folder, likeEscape(f.Folder)+`/%`)
 	}
@@ -183,11 +224,11 @@ func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
 
 func (s *Store) GetByTitle(ctx context.Context, title string) (*models.Note, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id,title,body,tags,folder,path,source,mod_time,created FROM notes WHERE title=? LIMIT 1`,
+		`SELECT id,title,body,tags,folder,account,path,source,mod_time,created FROM notes WHERE title=? LIMIT 1`,
 		title)
 	var n models.Note
 	var tagsStr, modStr, createdStr string
-	err := row.Scan(&n.ID, &n.Title, &n.Body, &tagsStr, &n.Folder, &n.Path, &n.Source, &modStr, &createdStr)
+	err := row.Scan(&n.ID, &n.Title, &n.Body, &tagsStr, &n.Folder, &n.Account, &n.Path, &n.Source, &modStr, &createdStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -218,9 +259,20 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 // That rollup is what lets a top-level notebook tab show an aggregate count
 // even when it's a pure container with no notes directly inside it,
 // matching List's self+descendants folder filter above.
-func (s *Store) CountByFolder(ctx context.Context) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT folder, COUNT(*) FROM notes GROUP BY folder`)
+// CountByFolder returns per-folder note counts, optionally scoped to one
+// account (empty account = every account, unscoped — the "All accounts"
+// tab). Scoping matters here for the same reason it does everywhere else
+// in this file: two accounts can have identically-named folders, and an
+// unscoped GROUP BY folder would silently merge their counts.
+func (s *Store) CountByFolder(ctx context.Context, account string) (map[string]int, error) {
+	q := `SELECT folder, COUNT(*) FROM notes`
+	var args []any
+	if account != "" {
+		q += ` WHERE account = ?`
+		args = append(args, account)
+	}
+	q += ` GROUP BY folder`
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +308,79 @@ func likeEscape(s string) string {
 	return s
 }
 
+// ListAccounts returns every distinct non-empty Apple Notes account name
+// present in the cache, sorted. Empty for obsidian-sourced notes, which
+// have no account concept — callers should treat a nil/empty result as
+// "no account row to show", not an error.
+func (s *Store) ListAccounts(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT account FROM notes WHERE account != '' ORDER BY account`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var accounts []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
+}
+
+// CountByAccount returns the note count per account (no rollup needed —
+// unlike folders, accounts aren't nested), plus the grand total under ""
+// for the "All accounts" row-0 tab — same convention as CountByFolder.
+func (s *Store) CountByAccount(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT account, COUNT(*) FROM notes GROUP BY account`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	total := 0
+	counts := map[string]int{}
+	for rows.Next() {
+		var account string
+		var c int
+		if err := rows.Scan(&account, &c); err != nil {
+			return nil, err
+		}
+		total += c
+		if account == "" {
+			continue
+		}
+		counts[account] = c
+	}
+	counts[""] = total
+	return counts, rows.Err()
+}
+
+// ListFoldersByAccount is like ListFolders but scoped to one account —
+// used to build the notebook tab tree (row 1/2) for whichever account tab
+// is currently active, so two accounts' identically-named folders don't
+// get deduplicated into one tab (see ListApple's doc comment).
+func (s *Store) ListFoldersByAccount(ctx context.Context, account string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT folder FROM notes WHERE folder != '' AND account = ? ORDER BY folder`,
+		account)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var folders []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return nil, err
+		}
+		folders = append(folders, f)
+	}
+	return folders, rows.Err()
+}
+
 func (s *Store) ListFolders(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT folder FROM notes WHERE folder != '' ORDER BY folder`)
@@ -281,7 +406,7 @@ func scan(rows *sql.Rows) ([]models.Note, error) {
 		var tagsStr, modStr, createdStr string
 		if err := rows.Scan(
 			&n.ID, &n.Title, &n.Body, &tagsStr,
-			&n.Folder, &n.Path, &n.Source, &modStr, &createdStr,
+			&n.Folder, &n.Account, &n.Path, &n.Source, &modStr, &createdStr,
 		); err != nil {
 			return nil, err
 		}

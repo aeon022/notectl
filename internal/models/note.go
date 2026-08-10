@@ -8,8 +8,9 @@ type Note struct {
 	Body    string
 	Tags    []string
 	Folder  string
-	Path    string    // relative path in vault (obsidian only)
-	Source  string    // "obsidian" | "apple"
+	Account string // Apple Notes account name (apple only, "" for obsidian) — e.g. "iCloud", "FH Burgenland"
+	Path    string // relative path in vault (obsidian only)
+	Source  string // "obsidian" | "apple"
 	ModTime time.Time
 	Created time.Time
 }
