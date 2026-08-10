@@ -9,40 +9,35 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ── Account row + two-row notebook tabs ─────────────────────────────────────
+// ── Account indicator + two-row notebook tabs ───────────────────────────────
 //
-// Row 0 (optional, only when there's more than one account — see
-// Model.accounts) lists Apple Notes accounts ("All accounts" + each
-// account name), e.g. "iCloud", "FH Burgenland". Row 1 lists the active
-// account's top-level notebooks ("All" + first path segment of every
-// folder in that account), horizontally scrollable when they overflow the
-// terminal width. Row 2, shown only while a top-level notebook with
-// subfolders is active, lists that notebook's direct children (e.g.
-// "Projects" → "Git", "MISSIONCTL"), prefixed with the parent's own name
-// so it's unambiguous which notebook it belongs to no matter where row 1
-// has scrolled to.
+// Row 1 lists the active account's top-level notebooks ("All" + first path
+// segment of every folder in that account), horizontally scrollable when
+// they overflow the terminal width. Row 2, shown only while a top-level
+// notebook with subfolders is active, lists that notebook's direct
+// children (e.g. "Projects" → "Git", "MISSIONCTL"), prefixed with the
+// parent's own name so it's unambiguous which notebook it belongs to no
+// matter where row 1 has scrolled to. tab/shift+tab walk a single
+// flattened sequence: every top-level notebook immediately followed by
+// its own children, in order (no separate "enter/leave sub-notebooks"
+// mode — an earlier version used "]"/"[" for that and it just added a
+// step for no real benefit). Selecting a top-level notebook aggregates it
+// and all its descendants (see store.List's self+descendants folder
+// filter); landing on one of its children narrows to that one subfolder.
 //
-// tab/shift+tab walk a single flattened sequence within whichever row
-// rowFocus currently points at: on row 1, every top-level notebook
-// immediately followed by its own children, in order (no separate
-// "enter/leave sub-notebooks" mode — an earlier version used "]"/"[" for
-// that and it just added a step for no real benefit); on row 0, every
-// account. "]"/"[" now switch rowFocus itself between the two rows — a
-// different job than sub-notebook depth, which tab/shift+tab already
-// handle within row 1. Selecting a top-level notebook aggregates it and
-// all its descendants (see store.List's self+descendants folder filter);
-// landing on one of its children narrows to that one subfolder. Selecting
-// an account reloads row 1 scoped to just that account's own folders (see
-// ListApple's doc comment for why: different accounts can have
-// identically-named top-level folders, e.g. two different "Notizen").
-
-// rowFocus is which tab row tab/shift+tab currently walk.
-type rowFocus int
-
-const (
-	focusNotebook rowFocus = iota // default — row 1/2, as before accounts existed
-	focusAccount                  // row 0
-)
+// Accounts (Apple Notes only, e.g. "iCloud", "FH Burgenland") are a
+// separate, orthogonal axis, deliberately NOT a third tab row — an
+// earlier version tried that (a whole extra row of pills, plus a
+// rowFocus concept to decide whether tab/shift+tab meant "walk notebooks"
+// or "walk accounts") and it was both visually noisy and confusing: two
+// keys doing different things depending on invisible state nobody could
+// see. Instead "["/"]" always and only cycle the active account —
+// immediate, visible effect (the header's account indicator changes, row
+// 1 reloads scoped to it), no focus mode to get stuck in. See
+// ListApple's doc comment for why accounts need to be scoped at all:
+// different accounts can have identically-named top-level notebooks
+// (e.g. two different "Notizen"), which a flat, account-unaware notebook
+// tree would otherwise merge into one tab.
 
 // buildFolderTree splits the flat, full-path folder list (as stored on each
 // note, e.g. "Projects/Git") into top-level notebooks and, per top-level
@@ -142,12 +137,12 @@ func (m Model) activeChildren() []string {
 	return m.subFolders[m.topFolders[pos.top-1]]
 }
 
-// ── Row 0: accounts ──────────────────────────────────────────────────────
+// ── Accounts (header indicator, not a tab row) ──────────────────────────
 
-// showAccountRow reports whether row 0 is worth rendering at all — a
-// single account (or no account concept, e.g. an obsidian vault) has
-// nothing to disambiguate.
-func (m Model) showAccountRow() bool {
+// hasMultipleAccounts reports whether there's more than one account to
+// disambiguate — a single account (or no account concept at all, e.g. an
+// obsidian vault) has nothing for the indicator/["/"]" to do.
+func (m Model) hasMultipleAccounts() bool {
 	return len(m.accounts) > 1
 }
 
@@ -162,7 +157,7 @@ func (m Model) currentAccountCursor() int {
 }
 
 // activeAccount returns the currently selected account name, or "" for
-// "All accounts" (also "" when there's no account row at all, which
+// "All accounts" (also "" when there's no account concept at all, which
 // naturally falls out of accounts being empty).
 func (m Model) activeAccount() string {
 	c := m.currentAccountCursor()
@@ -184,49 +179,18 @@ func (m Model) resolveAccountCursor(account string) (int, bool) {
 	return 0, false
 }
 
-func (m Model) accountLabels() []string {
-	labels := make([]string, 0, len(m.accounts)+1)
-	labels = append(labels, tabLabel("All accounts", m.accountCounts[""]))
-	for _, a := range m.accounts {
-		labels = append(labels, tabLabel(a, m.accountCounts[a]))
+// accountIndicator renders the compact "‹accountName› (i/n)" (or "All
+// accounts (n)") shown in the header — "" when there's nothing to
+// disambiguate, so renderAppHeader can just skip it.
+func (m Model) accountIndicator() string {
+	if !m.hasMultipleAccounts() {
+		return ""
 	}
-	return labels
-}
-
-// ensureAccountVisible reclamps m.accountScroll so the active account tab
-// is within the rendered window — same mechanics as ensureTabVisible.
-func (m *Model) ensureAccountVisible() {
-	w := m.width - 1
-	if w < 1 {
-		w = 1
+	c := m.currentAccountCursor()
+	if c == 0 {
+		return fmt.Sprintf("All accounts (%d)", len(m.accounts))
 	}
-	scroll, _ := tabWindow(m.accountLabels(), m.currentAccountCursor(), m.accountScroll, w)
-	m.accountScroll = scroll
-}
-
-// renderTabRow0 renders the account tab bar. Callers should check
-// showAccountRow first (see listStartY/preambleRows) — rendering it
-// unconditionally would cost a line even for a single-account setup with
-// nothing to disambiguate.
-func (m Model) renderTabRow0(w int) string {
-	labels := m.accountLabels()
-	active := m.currentAccountCursor()
-	start, end := tabWindow(labels, active, m.accountScroll, w)
-	var parts []string
-	if start > 0 {
-		parts = append(parts, styleMuted.Render("‹"))
-	}
-	for i := start; i < end; i++ {
-		style := styleTabInact
-		if i == active {
-			style = styleTabActive
-		}
-		parts = append(parts, style.Render(labels[i]))
-	}
-	if end < len(labels) {
-		parts = append(parts, styleMuted.Render("›"))
-	}
-	return strings.Join(parts, "  ")
+	return fmt.Sprintf("%s (%d/%d)", m.accounts[c-1], c, len(m.accounts))
 }
 
 func tabLabel(display string, count int) string {
@@ -384,37 +348,11 @@ func (m Model) renderTabRow2(w int) string {
 }
 
 // tabHitTest returns which tab a mouse click landed on: row 0 for the
-// account bar (index into m.accounts+1, "All accounts" is 0), row 1 for
-// the notebook top-level bar (index into m.topFolders+1, "All" is 0), row
-// 2 for the sub-notebook bar (index into the active top-level notebook's
-// children). row is -1 if the click missed all three. The account bar's
-// own y only exists when showAccountRow is true, which shifts row 1/2
-// down by one line — the same shift preambleRows/listStartY apply to the
-// note list below, so this can't drift out of sync with what's actually
-// on screen.
+// top-level bar (index into m.topFolders+1, "All" is 0), row 1 for the
+// sub-notebook bar (index into the active top-level notebook's children).
+// row is -1 if the click missed both.
 func (m Model) tabHitTest(x, y int) (row, idx int) {
-	nextY := 1 // row 0 (or row 1, if no account row) starts right below the header
-	if m.showAccountRow() {
-		if y == nextY {
-			labels := m.accountLabels()
-			active := m.currentAccountCursor()
-			start, end := tabWindow(labels, active, m.accountScroll, m.width-1)
-			col := 1
-			if start > 0 {
-				col += lipgloss.Width("‹") + 2
-			}
-			for i := start; i < end; i++ {
-				ww := tabWidth(labels[i], i == active)
-				if x >= col && x < col+ww {
-					return 0, i
-				}
-				col += ww + 2
-			}
-			return -1, -1
-		}
-		nextY++
-	}
-	if y == nextY {
+	if y == 1 {
 		labels := m.topLabels()
 		start, end := tabWindow(labels, m.currentPos().top, m.tabScroll, m.width-1)
 		col := 1
@@ -424,14 +362,13 @@ func (m Model) tabHitTest(x, y int) (row, idx int) {
 		for i := start; i < end; i++ {
 			ww := tabWidth(labels[i], i == m.currentPos().top)
 			if x >= col && x < col+ww {
-				return 1, i
+				return 0, i
 			}
 			col += ww + 2
 		}
 		return -1, -1
 	}
-	nextY++
-	if y == nextY {
+	if y == 2 {
 		kids := m.activeChildren()
 		if len(kids) == 0 {
 			return -1, -1
@@ -446,7 +383,7 @@ func (m Model) tabHitTest(x, y int) (row, idx int) {
 				ww = lipgloss.Width(styleSubActive.Render(l))
 			}
 			if x >= col && x < col+ww {
-				return 2, i
+				return 1, i
 			}
 			col += ww + 2
 		}

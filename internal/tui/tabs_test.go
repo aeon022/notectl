@@ -2,7 +2,7 @@ package tui
 
 import "testing"
 
-func TestShowAccountRow(t *testing.T) {
+func TestHasMultipleAccounts(t *testing.T) {
 	cases := []struct {
 		accounts []string
 		want     bool
@@ -13,8 +13,8 @@ func TestShowAccountRow(t *testing.T) {
 	}
 	for _, c := range cases {
 		m := Model{accounts: c.accounts}
-		if got := m.showAccountRow(); got != c.want {
-			t.Errorf("showAccountRow() with accounts=%v = %v, want %v", c.accounts, got, c.want)
+		if got := m.hasMultipleAccounts(); got != c.want {
+			t.Errorf("hasMultipleAccounts() with accounts=%v = %v, want %v", c.accounts, got, c.want)
 		}
 	}
 }
@@ -62,20 +62,23 @@ func TestResolveAccountCursor(t *testing.T) {
 	}
 }
 
-func TestAccountLabels(t *testing.T) {
-	m := Model{
-		accounts:      []string{"FH Burgenland", "iCloud"},
-		accountCounts: map[string]int{"": 10, "FH Burgenland": 3, "iCloud": 7},
+func TestAccountIndicator(t *testing.T) {
+	m := Model{accounts: []string{"FH Burgenland", "iCloud"}}
+
+	if got := m.accountIndicator(); got != "All accounts (2)" {
+		t.Errorf("accountIndicator() at cursor 0 = %q, want %q", got, "All accounts (2)")
 	}
-	labels := m.accountLabels()
-	want := []string{"All accounts 10", "FH Burgenland 3", "iCloud 7"}
-	if len(labels) != len(want) {
-		t.Fatalf("accountLabels() = %v, want %v", labels, want)
+
+	m.accountCursor = 2
+	if got := m.accountIndicator(); got != "iCloud (2/2)" {
+		t.Errorf("accountIndicator() at cursor 2 = %q, want %q", got, "iCloud (2/2)")
 	}
-	for i := range want {
-		if labels[i] != want[i] {
-			t.Errorf("accountLabels()[%d] = %q, want %q", i, labels[i], want[i])
-		}
+
+	// A single account has nothing to disambiguate, so there's no
+	// indicator to show at all — not even "All accounts (1)".
+	single := Model{accounts: []string{"iCloud"}}
+	if got := single.accountIndicator(); got != "" {
+		t.Errorf("accountIndicator() with one account = %q, want \"\"", got)
 	}
 }
 

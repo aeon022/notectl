@@ -189,17 +189,14 @@ type Model struct {
 	tabCursor  int                 // index into tabPositions()
 	tabScroll  int                 // first visible row-1 tab, kept in view by ensureTabVisible
 
-	// Account row (row 0) — Apple Notes only, e.g. "iCloud", "FH
-	// Burgenland". Only rendered when len(accounts) > 1: a single account
-	// (or an obsidian vault, which has no account concept at all) has
-	// nothing to disambiguate, so the row is just skipped rather than
-	// shown with one meaningless entry. tab/shift+tab drive whichever row
-	// rowFocus currently points at; "["/"]" switch which one that is.
-	accounts      []string // distinct accounts, row 0 (index 0 = "All accounts")
+	// Account indicator (header, not a tab row) — Apple Notes only, e.g.
+	// "iCloud", "FH Burgenland". Only shown when len(accounts) > 1: a
+	// single account (or an obsidian vault, which has no account concept
+	// at all) has nothing to disambiguate. "["/"]" cycle accounts
+	// directly (see tabs.go's package doc for why this isn't a tab row).
+	accounts      []string // distinct accounts (index 0 = "All accounts")
 	accountCounts map[string]int
-	accountCursor int // index into accountPositions()
-	accountScroll int // first visible account tab, kept in view by ensureAccountVisible
-	rowFocus      rowFocus
+	accountCursor int // index into accounts, 0 = "All accounts"
 
 	// pendingFolderRestore holds the persisted last-active folder path
 	// (see uistate) until m.folders first loads, resolved to a tab
@@ -439,7 +436,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bodyArea.SetWidth(m.editorBodyWidth())
 		m.bodyArea.SetHeight(m.height - 11)
 		m.ensureTabVisible()
-		m.ensureAccountVisible()
 
 	case notesLoadedMsg:
 		m.loading = false
@@ -468,7 +464,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingAccountRestore = ""
 			if cursor, ok := m.resolveAccountCursor(restore); ok {
 				m.accountCursor = cursor
-				m.ensureAccountVisible()
 				// Re-fetch scoped to the restored account before resolving
 				// pendingFolderRestore below — msg.folders here is still
 				// the unscoped (or wrong-account) tree from before this
@@ -667,22 +662,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if row, i := m.tabHitTest(msg.X, msg.Y); row >= 0 {
-				if row == 0 { // account row
-					m.rowFocus = focusAccount
-					if i != m.accountCursor {
-						m.accountCursor = i
-						m.ensureAccountVisible()
-						m.tabCursor = 0
-						m.ensureTabVisible()
-						m.cursor = 0
-						m.saveUIState()
-						return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
-					}
-					return m, nil
-				}
-				m.rowFocus = focusNotebook
 				var newCursor int
-				if row == 1 {
+				if row == 0 {
 					newCursor = m.cursorFor(i, -1)
 				} else {
 					newCursor = m.cursorFor(m.currentPos().top, i)
@@ -887,41 +868,40 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "tab":
-		if m.rowFocus == focusAccount {
-			if n := len(m.accounts) + 1; n > 0 {
-				m.accountCursor = (m.accountCursor + 1) % n
-			}
-			m.ensureAccountVisible()
-			m.tabCursor = 0
-			m.ensureTabVisible()
-		} else if n := len(m.tabPositions()); n > 0 {
+		if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor + 1) % n
-			m.ensureTabVisible()
 		}
+		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 	case "shift+tab":
-		if m.rowFocus == focusAccount {
-			if n := len(m.accounts) + 1; n > 0 {
-				m.accountCursor = (m.accountCursor - 1 + n) % n
-			}
-			m.ensureAccountVisible()
-			m.tabCursor = 0
-			m.ensureTabVisible()
-		} else if n := len(m.tabPositions()); n > 0 {
+		if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor - 1 + n) % n
-			m.ensureTabVisible()
 		}
+		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
-	case "[":
-		if m.showAccountRow() {
-			m.rowFocus = focusAccount
+	case "[", "]":
+		// Cycle the active account directly — immediate, visible effect
+		// (header indicator changes, row 1 reloads scoped to it), not a
+		// focus mode tab/shift+tab would then need to be redirected into.
+		// See tabs.go's package doc for why this replaced an earlier
+		// account tab row.
+		if m.hasMultipleAccounts() {
+			n := len(m.accounts) + 1
+			if msg.String() == "[" {
+				m.accountCursor = (m.accountCursor - 1 + n) % n
+			} else {
+				m.accountCursor = (m.accountCursor + 1) % n
+			}
+			m.tabCursor = 0
+			m.ensureTabVisible()
+			m.cursor = 0
+			m.saveUIState()
+			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
 		}
-	case "]":
-		m.rowFocus = focusNotebook
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		// jump to the nth visible (on-screen) note, date-group headers not
 		// counted — mirrors rowHitTest's own scroll-window math so a digit
@@ -1750,9 +1730,9 @@ func (m Model) helpContent() string {
 		Row("j / k", "move down / up").
 		Row("g / G", "jump to top / bottom").
 		Row("pgdn/up", "page down / up").
-		Row("tab", "next notebook (walks into sub-notebooks, then the next one) — or next account, if [ is focused there").
-		Row("s-tab", "previous notebook / previous account").
-		Row("[ / ]", "focus the account row / back to the notebook row (only when >1 account)").
+		Row("tab", "next notebook (walks into sub-notebooks, then the next one)").
+		Row("s-tab", "previous notebook").
+		Row("[ / ]", "previous / next account (only when Apple Notes has more than one)").
 		Row("< / >", "resize panes (two-pane layout)").
 		Row(":", "command palette — type an action by name").
 		Section("Notes").
@@ -1853,9 +1833,6 @@ func (m Model) renderPaletteBlock() string {
 func (m Model) renderSinglePane() string {
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	if m.showAccountRow() {
-		b.WriteString(" " + m.renderTabRow0(m.width-1) + "\n")
-	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -1903,9 +1880,6 @@ func (m Model) renderTwoPane() string {
 
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	if m.showAccountRow() {
-		b.WriteString(" " + m.renderTabRow0(m.width-1) + "\n")
-	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -2052,9 +2026,6 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 // row-2 sub-notebook tabs + the divider line.
 func (m Model) preambleRows() int {
 	y := 3 // header + tab row 1 + divider
-	if m.showAccountRow() {
-		y++ // tab row 0 (accounts)
-	}
 	if len(m.activeChildren()) > 0 {
 		y++ // tab row 2
 	}
@@ -2150,6 +2121,9 @@ func (m Model) rowHitTest(x, y int) int {
 func (m Model) renderAppHeader(w int) string {
 	left := styleHeader.Render("notectl")
 	right := styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006"))
+	if ind := m.accountIndicator(); ind != "" {
+		right = styleTabParentRef.Render(ind) + "   " + right
+	}
 	pad := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
 		pad = 1
