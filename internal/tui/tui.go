@@ -201,8 +201,12 @@ type Model struct {
 	// pendingFolderRestore holds the persisted last-active folder path
 	// (see uistate) until m.folders first loads, resolved to a tab
 	// position and cleared then — same one-shot pattern as openPath below.
-	pendingFolderRestore  string
-	pendingAccountRestore string // same idea, for the persisted active account
+	// The active account is deliberately NOT restored the same way: every
+	// launch starts on "All accounts" (accountCursor's zero value) so you
+	// always land somewhere that shows everything, rather than silently
+	// reopening scoped to whichever single account you happened to be on
+	// when you last quit.
+	pendingFolderRestore string
 
 	// tag browser ("t")
 	tagCursor int
@@ -336,36 +340,35 @@ func New(openPath string) Model {
 	uistate.Load(config.UIStatePath(), &state)
 
 	return Model{
-		sp:                    sp,
-		searchInput:           si,
-		paletteInput:          pi,
-		titleInput:            ti,
-		tagsInput:             tags,
-		bodyArea:              body,
-		vaultInput:            vi,
-		sourceIdx:             srcIdx,
-		sortByDate:            true,
-		paneRatio:             0.38,
-		loading:               true,
-		hoverRow:              -1,
-		lastClickRow:          -1,
-		openPath:              openPath,
-		pendingFolderRestore:  state.LastFolder,
-		pendingAccountRestore: state.LastAccount,
+		sp:                   sp,
+		searchInput:          si,
+		paletteInput:         pi,
+		titleInput:           ti,
+		tagsInput:            tags,
+		bodyArea:             body,
+		vaultInput:           vi,
+		sourceIdx:            srcIdx,
+		sortByDate:           true,
+		paneRatio:            0.38,
+		loading:              true,
+		hoverRow:             -1,
+		lastClickRow:         -1,
+		openPath:             openPath,
+		pendingFolderRestore: state.LastFolder,
 	}
 }
 
 // persistedState is what New() restores from and saveUIState saves to — see
-// missionctl-core/uistate.
+// missionctl-core/uistate. Deliberately has no LastAccount: the active
+// account always starts fresh at "All accounts" on launch, see
+// pendingFolderRestore's doc comment.
 type persistedState struct {
-	LastFolder  string `json:"last_folder"`
-	LastAccount string `json:"last_account"`
+	LastFolder string `json:"last_folder"`
 }
 
 func (m Model) saveUIState() {
 	_ = uistate.Save(config.UIStatePath(), persistedState{
-		LastFolder:  m.activeFolder(),
-		LastAccount: m.activeAccount(),
+		LastFolder: m.activeFolder(),
 	})
 }
 
@@ -458,19 +461,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.accounts = msg.accounts
 		if msg.accountCounts != nil {
 			m.accountCounts = msg.accountCounts
-		}
-		if m.pendingAccountRestore != "" {
-			restore := m.pendingAccountRestore
-			m.pendingAccountRestore = ""
-			if cursor, ok := m.resolveAccountCursor(restore); ok {
-				m.accountCursor = cursor
-				// Re-fetch scoped to the restored account before resolving
-				// pendingFolderRestore below — msg.folders here is still
-				// the unscoped (or wrong-account) tree from before this
-				// account was known, so a tab cursor resolved against it
-				// would land on the wrong notebook.
-				return m, loadNotesCmd(restore, m.pendingFolderRestore)
-			}
 		}
 		if m.pendingFolderRestore != "" {
 			restore := m.pendingFolderRestore
