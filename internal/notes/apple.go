@@ -224,6 +224,48 @@ end tell
 	return "apple-" + strings.TrimSpace(out), nil
 }
 
+// UpsertApple writes title/body to Apple Notes, updating an existing note in
+// place if one with this exact title already exists in folder, or creating a
+// new one otherwise. WriteApple itself never does this lookup — called with
+// id "" it always creates, which is fine for the TUI (a human already picked
+// an existing note's id off a list before editing it) but meant every
+// notectl write / MCP write_note call against an already-used title silently
+// spawned a duplicate note instead of updating it. This is the shared
+// lookup-then-write path for those two callers.
+func UpsertApple(title, body, folder string) (string, error) {
+	// Deliberately ListApple("") + filter here in Go, not ListApple(folder):
+	// the AppleScript folder filter matches a folder's own leaf name
+	// (fName) against the caller's possibly-nested path ("Projects/X"),
+	// which can never be equal for a real subfolder — it silently returns
+	// zero notes for any nested folder. models.Note.Folder is populated
+	// with the real resolved path afterwards (see appleFolderPath below),
+	// so filtering on that post-resolution field here sidesteps the bug
+	// instead of needing to fix ListApple's own script.
+	existing, err := ListApple("")
+	if err != nil {
+		return "", err
+	}
+	var matchID string
+	var matchMod time.Time
+	for _, n := range existing {
+		if n.Title == title && n.Folder == folder && (matchID == "" || n.ModTime.After(matchMod)) {
+			matchID = n.ID
+			matchMod = n.ModTime
+		}
+	}
+	if matchID == "" {
+		return WriteApple("", title, TextToHTML(body), folder)
+	}
+	// Update path: body's first line has to carry the title itself (see
+	// WriteApple's doc comment) — TextToHTML(title + body) mirrors what the
+	// create path does internally via its own title-div prefix.
+	plainBody := title
+	if body != "" {
+		plainBody = title + "\n\n" + body
+	}
+	return WriteApple(matchID, title, TextToHTML(plainBody), folder)
+}
+
 // appleFolderRefChain turns a folder path like "Projects/Git" into an
 // AppleScript snippet that creates every missing level (top-level "Projects"
 // first, then "Git" inside it) and an AppleScript expression referring to

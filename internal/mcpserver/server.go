@@ -165,7 +165,7 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	var n *models.Note
 	switch config.Source() {
 	case config.SourceApple:
-		id, werr := notes.WriteApple("", title, notes.TextToHTML(body), folder)
+		id, werr := notes.UpsertApple(title, body, folder)
 		if werr != nil {
 			return mcp.NewToolResultError(werr.Error()), nil
 		}

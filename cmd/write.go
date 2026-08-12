@@ -46,7 +46,7 @@ var writeCmd = &cobra.Command{
 		var n *models.Note
 		switch config.Source() {
 		case config.SourceApple:
-			id, werr := notes.WriteApple("", title, notes.TextToHTML(body), folder)
+			id, werr := notes.UpsertApple(title, body, folder)
 			if werr != nil {
 				return werr
 			}
