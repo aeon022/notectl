@@ -247,9 +247,10 @@ type Model struct {
 	sourceIdx  int
 
 	// list options
-	sortByDate bool    // true = mod_time desc (default), false = title asc
-	paneRatio  float64 // two-pane left width ratio (default 0.38)
-	confirmID  string  // non-empty = waiting for delete confirmation
+	sortByDate    bool    // true = mod_time desc (default), false = title asc
+	paneRatio     float64 // two-pane left width ratio, list+preview view (default 0.38)
+	editPaneRatio float64 // two-pane left width ratio, edit/new view (default 0.65) — editing wants far more room than a passive list preview does
+	confirmID     string  // non-empty = waiting for delete confirmation
 
 	// undo: "u" within undoWindow of a delete restores the deleted note —
 	// same pattern and window taskctl uses for its own delete-undo.
@@ -350,6 +351,7 @@ func New(openPath string) Model {
 		sourceIdx:            srcIdx,
 		sortByDate:           true,
 		paneRatio:            0.38,
+		editPaneRatio:        0.65,
 		loading:              true,
 		hoverRow:             -1,
 		lastClickRow:         -1,
@@ -417,11 +419,26 @@ func (m Model) leftWidth() int {
 }
 func (m Model) pvpWidth() int { return m.width - m.leftWidth() - 1 }
 
+// editorLeftWidth is renderNew's left (editable) pane width — its own,
+// wider ratio than leftWidth's list+preview split, since actively typing
+// needs far more room than glancing at a passive preview does.
+func (m Model) editorLeftWidth() int {
+	if !m.isTwoPane() {
+		return m.width
+	}
+	r := m.editPaneRatio
+	if r <= 0 {
+		r = 0.65
+	}
+	return min(int(float64(m.width)*r), m.width-20)
+}
+func (m Model) editorPvpWidth() int { return m.width - m.editorLeftWidth() - 1 }
+
 // editorBodyWidth is the textarea width in the new/edit view — the left pane
 // when the live preview is shown, full width otherwise.
 func (m Model) editorBodyWidth() int {
 	if m.isTwoPane() {
-		return m.leftWidth() - 4
+		return m.editorLeftWidth() - 4
 	}
 	return m.width - 4
 }
@@ -1911,11 +1928,7 @@ func (m Model) renderTwoPane() string {
 	// ── right: markdown preview ──
 	var rightLines []string
 	if len(m.notes) > 0 {
-		body := m.notes[m.cursor].Body
-		if body == "" && config.Source() != config.SourceApple {
-			body = ""
-		}
-		rendered := renderMarkdown(body, rightContentW)
+		rendered := renderMarkdown(m.notes[m.cursor].Body, rightContentW)
 		rightLines = strings.Split(rendered, "\n")
 	}
 
@@ -2327,10 +2340,7 @@ func (m Model) renderNew() string {
 	if m.editNote != nil {
 		title = "Edit: " + m.editNote.Title
 	}
-	leftW := m.width
-	if m.isTwoPane() {
-		leftW = m.leftWidth()
-	}
+	leftW := m.editorLeftWidth()
 
 	var b strings.Builder
 	b.WriteString(styleHeader.Render(title) + "\n")
@@ -2359,7 +2369,7 @@ func (m Model) renderNew() string {
 	}
 
 	// ── live preview pane (wide terminals) ──
-	rightW := m.pvpWidth()
+	rightW := m.editorPvpWidth()
 	rightLines := []string{styleMuted.Render(" Preview"), ""}
 	rightLines = append(rightLines, strings.Split(renderMarkdown(m.bodyArea.Value(), rightW-1), "\n")...)
 	leftLines := strings.Split(b.String(), "\n")
@@ -3168,12 +3178,23 @@ func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query str
 	}
 	title = strings.TrimSpace(title)
 
+	// Reserve the title's 6-char floor first, then give folder/tag meta
+	// whatever's left, truncating each to fit — the other way around (meta
+	// rendered at full length, title floored to 6 regardless of what that
+	// left) let a long folder/tag on a narrow terminal push the row past
+	// `width` altogether, since nothing here ever shrank meta back down.
+	// That overflow broke the two-pane divider's alignment (row + " │ " +
+	// preview) once row exceeded its column budget.
 	meta := "" // independent colors (folder/tag), unaffected by rowStyle
-	if n.Folder != "" {
-		meta += styleFolder.Render(" " + n.Folder)
+	metaBudget := width - 16 - 6
+	if n.Folder != "" && metaBudget > 1 {
+		folder := runewidth.Truncate(" "+n.Folder, metaBudget, "…")
+		meta += styleFolder.Render(folder)
+		metaBudget -= runewidth.StringWidth(folder)
 	}
-	if len(n.Tags) > 0 {
-		meta += styleTag.Render(" #" + n.Tags[0])
+	if len(n.Tags) > 0 && metaBudget > 1 {
+		tag := runewidth.Truncate(" #"+n.Tags[0], metaBudget, "…")
+		meta += styleTag.Render(tag)
 	}
 	metaW := lipgloss.Width(meta)
 	titleW := width - 16 - metaW

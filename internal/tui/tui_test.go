@@ -398,6 +398,29 @@ func TestFormatNoteRow_SelectedBackgroundSpansFullWidth(t *testing.T) {
 	}
 }
 
+func TestFormatNoteRow_LongFolderNeverOverflowsWidth(t *testing.T) {
+	// Regression test: titleW used to be floored to 6 *after* subtracting
+	// the full, untruncated meta (folder+tag) width — so a long folder
+	// name on a narrow terminal could leave titleW at its floor while
+	// meta itself still ran arbitrarily wide, pushing the whole row past
+	// `width`. In the two-pane list view that overflow shifted the "│"
+	// divider and everything right of it, breaking the layout (reported
+	// against a long-titled note in a deeply nested folder on a narrow
+	// terminal).
+	n := models.Note{
+		Title:   "hello",
+		Folder:  "Change-Management/Some/Very/Long/Nested/Folder/Path/That/Goes/On",
+		Tags:    []string{"a-fairly-long-tag-name-too"},
+		ModTime: time.Now(),
+	}
+	for _, w := range []int{40, 60, 100} {
+		row := formatNoteRow(&n, w, styleSelected, "")
+		if got := lipgloss.Width(row); got != w {
+			t.Errorf("width %d: expected rendered row to be exactly %d columns, got %d", w, w, got)
+		}
+	}
+}
+
 func TestHighlightMatches_ColorsOnlyMatchedRunes(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
