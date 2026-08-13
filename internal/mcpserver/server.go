@@ -23,6 +23,7 @@ func Serve() error {
 	s.AddTool(toolRead(), handleRead)
 	s.AddTool(toolWrite(), handleWrite)
 	s.AddTool(toolSearch(), handleSearch)
+	s.AddTool(toolDelete(), handleDelete)
 	s.AddTool(toolSync(), handleSync)
 	s.AddTool(toolGetDailyNote(), handleGetDailyNote)
 	s.AddTool(toolAppendDailyNote(), handleAppendDailyNote)
@@ -60,6 +61,14 @@ func toolSearch() mcp.Tool {
 		mcp.WithDescription("Search notes by keyword across title and content. Returns matching notes with preview."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search term")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 10)")),
+	)
+}
+
+func toolDelete() mcp.Tool {
+	return mcp.NewTool("delete_note",
+		mcp.WithDescription("Delete a note by title from the configured source (Apple Notes, Joplin, or the Obsidian vault). If multiple notes share the title, nothing is deleted — the matches are listed (with folder/account) so you can pass folder to pick one."),
+		mcp.WithString("title", mcp.Required(), mcp.Description("Note title (exact)")),
+		mcp.WithString("folder", mcp.Description("Folder to disambiguate when multiple notes share the title")),
 	)
 }
 
@@ -237,6 +246,77 @@ func handleSearch(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		b.WriteString("\n")
 	}
 	return mcp.NewToolResultText(b.String()), nil
+}
+
+// handleDelete mirrors the TUI's "d" delete flow (deleteNoteCmd in
+// internal/tui/tui.go): real source deleted first, cache row only removed
+// once that succeeds, so a failed real delete never leaves the cache
+// claiming a note is gone while it's still live and untracked in Apple
+// Notes/the vault. Unlike the TUI, there's no undo window here — an MCP
+// caller acts once and moves on, so ambiguous title matches are refused
+// outright (see FindByTitle) rather than picking one and hoping.
+func handleDelete(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	title := req.GetString("title", "")
+	folder := req.GetString("folder", "")
+	if title == "" {
+		return mcp.NewToolResultError("title is required"), nil
+	}
+
+	s, err := store.New(config.DBPath(), config.Shared())
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	matches, err := s.FindByTitle(ctx, title)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if folder != "" {
+		var filtered []models.Note
+		for _, n := range matches {
+			if n.Folder == folder {
+				filtered = append(filtered, n)
+			}
+		}
+		matches = filtered
+	}
+	if len(matches) == 0 {
+		return mcp.NewToolResultText(fmt.Sprintf("No note titled %q found. Run sync_notes first.", title)), nil
+	}
+	if len(matches) > 1 {
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("%d notes titled %q — nothing deleted, pass folder to pick one:\n\n", len(matches), title))
+		for _, n := range matches {
+			b.WriteString(fmt.Sprintf("• folder=%q", n.Folder))
+			if n.Account != "" {
+				b.WriteString(fmt.Sprintf(" account=%q", n.Account))
+			}
+			b.WriteString(fmt.Sprintf(" modified=%s\n", n.ModTime.Format("02 Jan 2006 15:04")))
+		}
+		return mcp.NewToolResultText(b.String()), nil
+	}
+
+	n := matches[0]
+	switch config.Source() {
+	case config.SourceApple:
+		if err := notes.DeleteApple(n.ID); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+	case config.SourceJoplin:
+		if err := notes.DeleteJoplin(n.ID); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+	default:
+		if err := notes.Delete(config.VaultPath(), n.Path); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+	}
+	if err := s.Delete(ctx, n.ID); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Deleted: %s (%s)", n.Title, n.Folder)), nil
 }
 
 func toolGetDailyNote() mcp.Tool {

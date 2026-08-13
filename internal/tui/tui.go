@@ -2124,7 +2124,13 @@ func (m Model) rowHitTest(x, y int) int {
 func (m Model) renderAppHeader(w int) string {
 	left := styleHeader.Render("notectl")
 	right := styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006"))
-	if ind := m.accountIndicator(); ind != "" {
+	if ind, mixed := m.notebookAccountIndicator(); ind != "" {
+		style := styleTabParentRef
+		if mixed {
+			style = styleSyncing
+		}
+		right = style.Render(ind) + "   " + right
+	} else if ind := m.accountIndicator(); ind != "" {
 		right = styleTabParentRef.Render(ind) + "   " + right
 	}
 	pad := w - lipgloss.Width(left) - lipgloss.Width(right)

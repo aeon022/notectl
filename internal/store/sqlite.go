@@ -243,6 +243,24 @@ func (s *Store) GetByTitle(ctx context.Context, title string) (*models.Note, err
 	return &n, nil
 }
 
+// FindByTitle returns every note whose title exactly matches, most-recently
+// modified first — GetByTitle's LIMIT 1 silently picks an arbitrary one when
+// duplicate titles exist (a real occurrence here: Dropbox-conflict duplicate
+// notes from concurrent multi-machine writes), which is tolerable for a read
+// but not safe for an irreversible delete. Callers that need one unambiguous
+// target should require len==1, disambiguating by folder if the caller has
+// one, rather than guessing which duplicate the caller meant.
+func (s *Store) FindByTitle(ctx context.Context, title string) ([]models.Note, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,title,body,tags,folder,account,path,source,mod_time,created FROM notes WHERE title=? ORDER BY mod_time DESC`,
+		title)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scan(rows)
+}
+
 func (s *Store) DeleteBySource(ctx context.Context, source string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM notes WHERE source=?`, source)
 	return err

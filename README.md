@@ -384,6 +384,7 @@ Restart Claude Desktop after editing this file.
 | `read_note` | Return full content of a note by title. |
 | `write_note` | Create or update a note in the vault. Params: `title`, `body`, `folder`, `tags`. |
 | `search_notes` | Keyword search across titles and bodies, returns results with previews. |
+| `delete_note` | Delete a note by title. Params: `title`, `folder` (to disambiguate if the title isn't unique — refuses to guess). |
 | `sync_notes` | Re-index the vault into the SQLite cache. |
 | `get_daily_note` | Return today's daily note; creates it from the template if it does not exist. |
 | `append_daily_note` | Append content under a named section. Params: `content`, `section`, `folder`. |

@@ -193,6 +193,45 @@ func (m Model) accountIndicator() string {
 	return fmt.Sprintf("%s (%d/%d)", m.accounts[c-1], c, len(m.accounts))
 }
 
+// notebookAccountIndicator reports which account(s) the notes currently on
+// screen actually live in, distinct from accountIndicator (which only shows
+// the active FILTER tab, e.g. "All accounts (7)"). Under "All accounts", a
+// notebook name like "Notizen" can be a merge of several accounts' own
+// same-named folders (see buildFolderTree's doc comment above) — without
+// this, a note's real Apple Notes account was invisible everywhere in the
+// UI once you'd navigated into a notebook, so a note could look like it
+// belonged to whichever account you last had active, when it actually sat
+// in a different one entirely (confirmed live: a note surfaced under the
+// "Notizen" tab while last on the "Die Brücke || Gerwin" account turned out
+// to actually live in a third, unrelated Exchange account's own "Notizen").
+// mixed is true when the on-screen notes span more than one account, so the
+// caller can render it as a warning instead of a plain label. Returns ""
+// when there's no notebook selected, no notes loaded yet, or no account
+// concept at all (nothing to disambiguate).
+func (m Model) notebookAccountIndicator() (label string, mixed bool) {
+	if !m.hasMultipleAccounts() || m.activeFolder() == "" || len(m.notes) == 0 {
+		return "", false
+	}
+	seen := map[string]bool{}
+	var distinct []string
+	for _, n := range m.notes {
+		if n.Account == "" || seen[n.Account] {
+			continue
+		}
+		seen[n.Account] = true
+		distinct = append(distinct, n.Account)
+	}
+	switch len(distinct) {
+	case 0:
+		return "", false
+	case 1:
+		return distinct[0], false
+	default:
+		sort.Strings(distinct)
+		return fmt.Sprintf("⚠ %d accounts mixed here", len(distinct)), true
+	}
+}
+
 func tabLabel(display string, count int) string {
 	if count > 0 {
 		return fmt.Sprintf("%s %d", display, count)
