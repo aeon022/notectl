@@ -1970,7 +1970,7 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 	var lineToNote []int
 	cursorLine := 0
 	lastGroup := ""
-	_, mixedAccounts := m.notebookAccountIndicator()
+	mixedAccounts := len(m.distinctAccountsInView()) > 1
 
 	for i := range m.notes {
 		n := &m.notes[i]
@@ -2125,15 +2125,29 @@ func (m Model) rowHitTest(x, y int) int {
 
 func (m Model) renderAppHeader(w int) string {
 	left := styleHeader.Render("notectl")
-	right := styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006"))
-	if ind, mixed := m.notebookAccountIndicator(); ind != "" {
+	dateStr := time.Now().Format("Mon, 02 Jan 2006")
+	right := styleMuted.Render(dateStr)
+
+	// Budget for whichever account indicator gets shown: whatever's left
+	// in the row after "notectl", the date, and the "   " gap between
+	// them. Both indicators below are now hard-capped to this via
+	// runewidth — a label that measured as fitting but didn't (ambiguous-
+	// width glyphs render wider in the terminal than any width library
+	// computes) used to overflow the line, wrap, and get silently
+	// overwritten by the next redraw. See notebookAccountIndicator's doc
+	// comment for the concrete case that surfaced this.
+	budget := w - lipgloss.Width(left) - runewidth.StringWidth(dateStr) - 3
+	if ind, mixed := m.notebookAccountIndicator(budget); ind != "" {
 		style := styleTabParentRef
 		if mixed {
 			style = styleSyncing
 		}
 		right = style.Render(ind) + "   " + right
 	} else if ind := m.accountIndicator(); ind != "" {
-		right = styleTabParentRef.Render(ind) + "   " + right
+		ind = runewidth.Truncate(ind, budget, "…")
+		if ind != "" {
+			right = styleTabParentRef.Render(ind) + "   " + right
+		}
 	}
 	pad := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {

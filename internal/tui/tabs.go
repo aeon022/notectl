@@ -194,6 +194,31 @@ func (m Model) accountIndicator() string {
 	return fmt.Sprintf("%s (%d/%d)", m.accounts[c-1], c, len(m.accounts))
 }
 
+// distinctAccountsInView returns the distinct accounts among the notes
+// currently on screen (m.notes), sorted, for detecting the same-named-
+// notebook collision (see notebookAccountIndicator's doc comment below).
+// Deliberately separate from that function's header-label formatting so a
+// caller that only needs the yes/no "are these notes mixed across
+// accounts" fact — like buildListLinesWithMapping deciding whether to tag
+// each row — doesn't have to fake a header width budget just to get an
+// answer that has nothing to do with a header's available columns.
+func (m Model) distinctAccountsInView() []string {
+	if !m.hasMultipleAccounts() || m.activeFolder() == "" || len(m.notes) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var distinct []string
+	for _, n := range m.notes {
+		if n.Account == "" || seen[n.Account] {
+			continue
+		}
+		seen[n.Account] = true
+		distinct = append(distinct, n.Account)
+	}
+	sort.Strings(distinct)
+	return distinct
+}
+
 // notebookAccountIndicator reports which account(s) the notes currently on
 // screen actually live in, distinct from accountIndicator (which only shows
 // the active FILTER tab, e.g. "All accounts (7)"). Under "All accounts", a
@@ -206,46 +231,58 @@ func (m Model) accountIndicator() string {
 // "Notizen" tab while last on the "Die Brücke || Gerwin" account turned out
 // to actually live in a third, unrelated Exchange account's own "Notizen").
 // mixed is true when the on-screen notes span more than one account, so the
-// caller can render it as a warning instead of a plain label. Returns ""
-// when there's no notebook selected, no notes loaded yet, or no account
-// concept at all (nothing to disambiguate).
-func (m Model) notebookAccountIndicator() (label string, mixed bool) {
-	if !m.hasMultipleAccounts() || m.activeFolder() == "" || len(m.notes) == 0 {
+// caller can render it as a warning instead of a plain label. maxWidth is a
+// hard cap on the returned label's rendered width — the caller passes
+// however many columns are actually free in the header, and the result is
+// guaranteed never to exceed it (via runewidth, not lipgloss.Width: see "!"
+// below for why the two disagree here). Returns "" when there's no notebook
+// selected, no notes loaded yet, no account concept at all, or no room to
+// say anything useful.
+func (m Model) notebookAccountIndicator(maxWidth int) (label string, mixed bool) {
+	distinct := m.distinctAccountsInView()
+	if len(distinct) == 0 || maxWidth < 4 {
 		return "", false
 	}
-	seen := map[string]bool{}
-	var distinct []string
-	for _, n := range m.notes {
-		if n.Account == "" || seen[n.Account] {
-			continue
-		}
-		seen[n.Account] = true
-		distinct = append(distinct, n.Account)
-	}
-	sort.Strings(distinct)
 	switch len(distinct) {
-	case 0:
-		return "", false
 	case 1:
-		return distinct[0], false
+		return runewidth.Truncate(distinct[0], maxWidth, "…"), false
 	case 2:
 		// Named explicitly rather than just "2 accounts mixed" — the
 		// exact-two case is common enough (e.g. a Uni + Arbeit Exchange
 		// account both syncing a same-named notebook) that naming both
 		// right in the header saves a trip into the note list to find out
-		// which two. Each name is truncated on its own rather than gating
-		// the combined label on one overall width budget — an earlier
-		// version did that and silently fell back to the bare count
+		// which two.
+		//
+		// "!" instead of "⚠", "/" instead of "↔": both of the original
+		// symbols are East-Asian-Width "Ambiguous" runes that most
+		// terminals render one column wider (emoji-style) than runewidth
+		// *and* lipgloss.Width both compute — the same disagreement
+		// apple.go's stripVariationSelectors works around for note bodies.
+		// Here that meant the header string measured as fitting the row
+		// but actually didn't: the line silently overflowed the terminal
+		// width, wrapped, and the next redraw (tab row) overwrote it —
+		// looked exactly like the account text flashing and disappearing.
+		// Plain ASCII has no such ambiguity in any terminal.
+		//
+		// Each name is truncated to its own share of maxWidth rather than
+		// gating the combined label on one all-or-nothing budget — an
+		// earlier version did that and fell back to the bare count
 		// whenever either name was long, which on this very machine was
 		// every time: the real "Notizen" collision here pairs a 36-char
 		// Exchange UPN ("2330069032@hochschule-burgenland.at") with "Die
-		// Brücke || Gerwin", together always well past any single-line
-		// budget worth keeping.
-		a := runewidth.Truncate(distinct[0], 18, "…")
-		b := runewidth.Truncate(distinct[1], 18, "…")
-		return fmt.Sprintf("⚠ %s ↔ %s", a, b), true
+		// Brücke || Gerwin".
+		prefix, sep := "! ", " / "
+		overhead := runewidth.StringWidth(prefix) + runewidth.StringWidth(sep)
+		budget := maxWidth - overhead
+		if budget < 6 {
+			return runewidth.Truncate(fmt.Sprintf("! %d accounts mixed here", len(distinct)), maxWidth, "…"), true
+		}
+		each := budget / 2
+		a := runewidth.Truncate(distinct[0], each, "…")
+		b := runewidth.Truncate(distinct[1], each, "…")
+		return prefix + a + sep + b, true
 	default:
-		return fmt.Sprintf("⚠ %d accounts mixed here", len(distinct)), true
+		return runewidth.Truncate(fmt.Sprintf("! %d accounts mixed here", len(distinct)), maxWidth, "…"), true
 	}
 }
 

@@ -1,6 +1,11 @@
 package tui
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/aeon022/notectl/internal/models"
+	"github.com/mattn/go-runewidth"
+)
 
 func TestHasMultipleAccounts(t *testing.T) {
 	cases := []struct {
@@ -79,6 +84,35 @@ func TestAccountIndicator(t *testing.T) {
 	single := Model{accounts: []string{"iCloud"}}
 	if got := single.accountIndicator(); got != "" {
 		t.Errorf("accountIndicator() with one account = %q, want \"\"", got)
+	}
+}
+
+// Regression test for the real collision on this machine: a note's account
+// disagreement between a long Exchange UPN and a shorter account name used
+// to blow the header's width budget and get silently swallowed by the
+// terminal's line wrap on the very next redraw (looked like the label
+// flashing and disappearing). notebookAccountIndicator must now never
+// return a label wider than the budget it's given, for any budget.
+func TestNotebookAccountIndicator_NeverExceedsWidthBudget(t *testing.T) {
+	longAccount := "2330069032@hochschule-burgenland.at"
+	shortAccount := "Die Brücke || Gerwin"
+	m := Model{
+		accounts:   []string{longAccount, shortAccount, "iCloud"},
+		topFolders: []string{"Notizen"},
+		tabCursor:  1, // pos{top:1,sub:-1} -> activeFolder() == "Notizen"
+		notes: []models.Note{
+			{Account: longAccount, Folder: "Notizen"},
+			{Account: shortAccount, Folder: "Notizen"},
+		},
+	}
+	for _, budget := range []int{4, 10, 20, 40, 60, 100} {
+		label, mixed := m.notebookAccountIndicator(budget)
+		if got := runewidth.StringWidth(label); got > budget {
+			t.Errorf("budget %d: label %q rendered at %d columns, exceeds budget", budget, label, got)
+		}
+		if label != "" && !mixed {
+			t.Errorf("budget %d: label %q should be flagged mixed for a real 2-account collision", budget, label)
+		}
 	}
 }
 
