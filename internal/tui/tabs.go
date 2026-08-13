@@ -7,6 +7,7 @@ import (
 
 	"github.com/aeon022/missionctl-core/humanize"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 )
 
 // ── Account indicator + two-row notebook tabs ───────────────────────────────
@@ -232,12 +233,17 @@ func (m Model) notebookAccountIndicator() (label string, mixed bool) {
 		// exact-two case is common enough (e.g. a Uni + Arbeit Exchange
 		// account both syncing a same-named notebook) that naming both
 		// right in the header saves a trip into the note list to find out
-		// which two. Falls back to the generic count form only if the pair
-		// of names themselves would already crowd the header.
-		if label := fmt.Sprintf("⚠ %s ↔ %s", distinct[0], distinct[1]); lipgloss.Width(label) <= 40 {
-			return label, true
-		}
-		return fmt.Sprintf("⚠ %d accounts mixed here", len(distinct)), true
+		// which two. Each name is truncated on its own rather than gating
+		// the combined label on one overall width budget — an earlier
+		// version did that and silently fell back to the bare count
+		// whenever either name was long, which on this very machine was
+		// every time: the real "Notizen" collision here pairs a 36-char
+		// Exchange UPN ("2330069032@hochschule-burgenland.at") with "Die
+		// Brücke || Gerwin", together always well past any single-line
+		// budget worth keeping.
+		a := runewidth.Truncate(distinct[0], 18, "…")
+		b := runewidth.Truncate(distinct[1], 18, "…")
+		return fmt.Sprintf("⚠ %s ↔ %s", a, b), true
 	default:
 		return fmt.Sprintf("⚠ %d accounts mixed here", len(distinct)), true
 	}
