@@ -196,6 +196,9 @@ notectl mcp
 | `H` | Toggle hiding empty notebooks |
 | `/` | Search title + body |
 | `tab` / `shift+tab` | Switch folder tab |
+| `l` / `right` | Expand notebook (▸→▾), or step into its first child |
+| `h` / `left` | Collapse notebook, or step up from a child to its parent |
+| `[` / `]` | Previous / next account (only when Apple Notes has more than one) |
 | `PgDn` / `PgUp` | Page down / up |
 | `g` / `G` | First / last note |
 | `q` | Quit |

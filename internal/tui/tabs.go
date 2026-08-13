@@ -11,21 +11,32 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// ── Account indicator + two-row notebook tabs ───────────────────────────────
+// ── Account line + two-row notebook tabs ────────────────────────────────────
 //
 // Row 1 lists the active account's top-level notebooks ("All" + first path
 // segment of every folder in that account), horizontally scrollable when
-// they overflow the terminal width. Row 2, shown only while a top-level
-// notebook with subfolders is active, lists that notebook's direct
-// children (e.g. "Projects" → "Git", "MISSIONCTL"), prefixed with the
-// parent's own name so it's unambiguous which notebook it belongs to no
-// matter where row 1 has scrolled to. tab/shift+tab walk a single
-// flattened sequence: every top-level notebook immediately followed by
-// its own children, in order (no separate "enter/leave sub-notebooks"
-// mode — an earlier version used "]"/"[" for that and it just added a
-// step for no real benefit). Selecting a top-level notebook aggregates it
-// and all its descendants (see store.List's self+descendants folder
-// filter); landing on one of its children narrows to that one subfolder.
+// they overflow the terminal width. A notebook with children shows a
+// disclosure marker ("▸" collapsed, "▾" expanded — see topFolderLabel) so
+// it's visible on row 1 alone that it has something underneath, without
+// having to select it first. Row 2, shown only for a top-level notebook
+// that's been explicitly expanded (see expandedTops on the Model — "right"/
+// "l" expands or steps into the first child, "left"/"h" collapses or steps
+// up to the parent), lists that notebook's direct children (e.g.
+// "Projects" → "Git", "MISSIONCTL"), prefixed with the parent's own name so
+// it's unambiguous which notebook it belongs to even when row 1 has
+// scrolled and the parent itself isn't visible anymore. tab/shift+tab walk
+// a single flattened sequence: every top-level notebook, and — only while
+// expanded — its own children right after it (children of a collapsed
+// notebook are simply absent from the sequence, not skipped over). An
+// earlier version auto-revealed row 2 the instant a notebook with children
+// became the active top-level selection, with tab/shift+tab always walking
+// straight through every notebook's children whether you wanted to see
+// them or not — replaced with this explicit expand step because that
+// auto-reveal made simply glancing across the top-level row impossible.
+// Selecting a top-level notebook aggregates it and all its descendants
+// (see store.List's self+descendants folder filter) regardless of whether
+// it's expanded; landing on one of its children narrows to that one
+// subfolder.
 //
 // Accounts (Apple Notes only, e.g. "iCloud", "FH Burgenland") are a
 // separate, orthogonal axis, deliberately NOT a third tab row — an
@@ -34,12 +45,15 @@ import (
 // or "walk accounts") and it was both visually noisy and confusing: two
 // keys doing different things depending on invisible state nobody could
 // see. Instead "["/"]" always and only cycle the active account —
-// immediate, visible effect (the header's account indicator changes, row
-// 1 reloads scoped to it), no focus mode to get stuck in. See
-// ListApple's doc comment for why accounts need to be scoped at all:
-// different accounts can have identically-named top-level notebooks
-// (e.g. two different "Notizen"), which a flat, account-unaware notebook
-// tree would otherwise merge into one tab.
+// immediate, visible effect (renderAccountLine changes, row 1 reloads
+// scoped to it), no focus mode to get stuck in. See ListApple's doc
+// comment for why accounts need to be scoped at all: different accounts
+// can have identically-named top-level notebooks (e.g. two different
+// "Notizen"). buildAccountAwareFolderTree is what keeps those from
+// merging into one ambiguous tab under "All accounts" — see its own doc
+// comment — splitting them into one tab per account instead, with
+// renderAccountLine (not the tab label itself) naming which account a
+// given split tab is bound to.
 
 // buildFolderTree splits the flat, full-path folder list (as stored on each
 // note, e.g. "Projects/Git") into top-level notebooks and, per top-level
@@ -186,12 +200,19 @@ func buildAccountAwareFolderTree(folders []string, counts map[string]int, perAcc
 // notebook itself (aggregate) or an index into its children.
 type tabPos struct{ top, sub int }
 
-// tabPositions is the full flattened sequence tab/shift+tab step through.
+// tabPositions is the full flattened sequence tab/shift+tab step through —
+// every top-level notebook, plus (only for one that's been explicitly
+// expanded, see expandedTops) its own children right after it. A collapsed
+// notebook's children are simply absent from the sequence: tab/shift+tab
+// skip straight past them until "right"/"l" expands it.
 func (m Model) tabPositions() []tabPos {
 	positions := make([]tabPos, 0, len(m.topFolders)+1)
 	positions = append(positions, tabPos{0, -1})
 	for i, t := range m.topFolders {
 		positions = append(positions, tabPos{i + 1, -1})
+		if !m.isExpanded(i) {
+			continue
+		}
 		for j := range m.subFolders[t] {
 			positions = append(positions, tabPos{i + 1, j})
 		}
@@ -330,96 +351,32 @@ func (m Model) accountIndicator() string {
 	return fmt.Sprintf("%s (%d/%d)", m.accounts[c-1], c, len(m.accounts))
 }
 
-// distinctAccountsInView returns the distinct accounts among the notes
-// currently on screen (m.notes), sorted, for detecting the same-named-
-// notebook collision (see notebookAccountIndicator's doc comment below).
-// Deliberately separate from that function's header-label formatting so a
-// caller that only needs the yes/no "are these notes mixed across
-// accounts" fact — like buildListLinesWithMapping deciding whether to tag
-// each row — doesn't have to fake a header width budget just to get an
-// answer that has nothing to do with a header's available columns.
-func (m Model) distinctAccountsInView() []string {
-	if !m.hasMultipleAccounts() || m.activeFolder() == "" || len(m.notes) == 0 {
-		return nil
+// renderAccountLine is the always-visible, full-width line just below the
+// app header showing which account is actually in play — replacing the old
+// accountIndicator-in-the-header approach, which had to cram a possibly
+// long account name (a 36-char Exchange UPN, seen live) in next to
+// "notectl" and the date on one shared line; that budget pressure was what
+// previously caused the header to silently overflow and get overwritten by
+// the next redraw. Getting its own line removes the budget problem instead
+// of working around it.
+//
+// Shows the current top-level tab's own bound account (see
+// topFolderAccounts) when it has one — a collision-split tab (e.g. one of
+// two "Notizen" tabs) is unambiguous on its own, so this updates live as
+// you move between them, telling you exactly which account you're looking
+// at without the tab label itself needing to say so. Otherwise falls back
+// to accountIndicator's "All accounts (n)" / "<account> (i/n)" — the global
+// "["/"]" filter state. "" when there's nothing to disambiguate (a single
+// account, or no account concept at all), so callers can skip the row.
+func (m Model) renderAccountLine(w int) string {
+	if !m.hasMultipleAccounts() {
+		return ""
 	}
-	seen := map[string]bool{}
-	var distinct []string
-	for _, n := range m.notes {
-		if n.Account == "" || seen[n.Account] {
-			continue
-		}
-		seen[n.Account] = true
-		distinct = append(distinct, n.Account)
+	text := m.accountIndicator()
+	if a := m.activeFolderAccount(); a != "" {
+		text = "Account: " + a
 	}
-	sort.Strings(distinct)
-	return distinct
-}
-
-// notebookAccountIndicator reports which account(s) the notes currently on
-// screen actually live in, distinct from accountIndicator (which only shows
-// the active FILTER tab, e.g. "All accounts (7)"). Under "All accounts", a
-// notebook name like "Notizen" can be a merge of several accounts' own
-// same-named folders (see buildFolderTree's doc comment above) — without
-// this, a note's real Apple Notes account was invisible everywhere in the
-// UI once you'd navigated into a notebook, so a note could look like it
-// belonged to whichever account you last had active, when it actually sat
-// in a different one entirely (confirmed live: a note surfaced under the
-// "Notizen" tab while last on the "Die Brücke || Gerwin" account turned out
-// to actually live in a third, unrelated Exchange account's own "Notizen").
-// mixed is true when the on-screen notes span more than one account, so the
-// caller can render it as a warning instead of a plain label. maxWidth is a
-// hard cap on the returned label's rendered width — the caller passes
-// however many columns are actually free in the header, and the result is
-// guaranteed never to exceed it (via runewidth, not lipgloss.Width: see "!"
-// below for why the two disagree here). Returns "" when there's no notebook
-// selected, no notes loaded yet, no account concept at all, or no room to
-// say anything useful.
-func (m Model) notebookAccountIndicator(maxWidth int) (label string, mixed bool) {
-	distinct := m.distinctAccountsInView()
-	if len(distinct) == 0 || maxWidth < 4 {
-		return "", false
-	}
-	switch len(distinct) {
-	case 1:
-		return runewidth.Truncate(distinct[0], maxWidth, "…"), false
-	case 2:
-		// Named explicitly rather than just "2 accounts mixed" — the
-		// exact-two case is common enough (e.g. a Uni + Arbeit Exchange
-		// account both syncing a same-named notebook) that naming both
-		// right in the header saves a trip into the note list to find out
-		// which two.
-		//
-		// "!" instead of "⚠", "/" instead of "↔": both of the original
-		// symbols are East-Asian-Width "Ambiguous" runes that most
-		// terminals render one column wider (emoji-style) than runewidth
-		// *and* lipgloss.Width both compute — the same disagreement
-		// apple.go's stripVariationSelectors works around for note bodies.
-		// Here that meant the header string measured as fitting the row
-		// but actually didn't: the line silently overflowed the terminal
-		// width, wrapped, and the next redraw (tab row) overwrote it —
-		// looked exactly like the account text flashing and disappearing.
-		// Plain ASCII has no such ambiguity in any terminal.
-		//
-		// Each name is truncated to its own share of maxWidth rather than
-		// gating the combined label on one all-or-nothing budget — an
-		// earlier version did that and fell back to the bare count
-		// whenever either name was long, which on this very machine was
-		// every time: the real "Notizen" collision here pairs a 36-char
-		// Exchange UPN ("2330069032@hochschule-burgenland.at") with "Die
-		// Brücke || Gerwin".
-		prefix, sep := "! ", " / "
-		overhead := runewidth.StringWidth(prefix) + runewidth.StringWidth(sep)
-		budget := maxWidth - overhead
-		if budget < 6 {
-			return runewidth.Truncate(fmt.Sprintf("! %d accounts mixed here", len(distinct)), maxWidth, "…"), true
-		}
-		each := budget / 2
-		a := runewidth.Truncate(distinct[0], each, "…")
-		b := runewidth.Truncate(distinct[1], each, "…")
-		return prefix + a + sep + b, true
-	default:
-		return runewidth.Truncate(fmt.Sprintf("! %d accounts mixed here", len(distinct)), maxWidth, "…"), true
-	}
+	return styleTabParentRef.Render(runewidth.Truncate(text, w, "…"))
 }
 
 func tabLabel(display string, count int) string {
@@ -443,26 +400,66 @@ func (m Model) topFolderKey(i int) string {
 	return top
 }
 
+// hasChildren reports whether top-level tab i has any row-2 sub-notebooks —
+// independent of whether it's currently expanded, so topFolderLabel can
+// show the disclosure marker on every parent, not just the active one.
+func (m Model) hasChildren(i int) bool {
+	if i < 0 || i >= len(m.topFolders) {
+		return false
+	}
+	return len(m.subFolders[m.topFolders[i]]) > 0
+}
+
+// isExpanded reports whether top-level tab i currently shows its children
+// in row 2 — see expandedTops' doc comment on the Model field.
+func (m Model) isExpanded(i int) bool {
+	if i < 0 || i >= len(m.topFolders) || m.expandedTops == nil {
+		return false
+	}
+	return m.expandedTops[m.topFolderKey(i)]
+}
+
+// setExpanded sets whether top-level tab i shows its children in row 2.
+func (m *Model) setExpanded(i int, expanded bool) {
+	if i < 0 || i >= len(m.topFolders) {
+		return
+	}
+	if m.expandedTops == nil {
+		m.expandedTops = map[string]bool{}
+	}
+	key := m.topFolderKey(i)
+	if expanded {
+		m.expandedTops[key] = true
+	} else {
+		delete(m.expandedTops, key)
+	}
+}
+
 // topFolderLabel is what tab i actually displays: the plain folder name,
-// or "<folder> (<account>)" when this tab is bound to one specific account
-// — account names are truncated to keep a same-named collision from
-// dominating the whole tab row (a 36-char Exchange UPN otherwise would).
+// prefixed with a disclosure marker when it has children — "▸" collapsed,
+// "▾" expanded — so a parent notebook's own existence is visible on row 1
+// without having to select it first (previously the only way to discover a
+// notebook had children at all was to tab onto it and watch row 2 pop up).
+// The tab's bound account, if any (see topFolderAccounts), is deliberately
+// NOT in this label — that lives on renderAccountLine instead, so a
+// same-named collision's two tabs still read as plain, short notebook
+// names rather than one of them carrying a 36-char Exchange address.
 func (m Model) topFolderLabel(i int) string {
 	top := m.topFolders[i]
-	if i >= len(m.topFolderAccounts) || m.topFolderAccounts[i] == "" {
+	if !m.hasChildren(i) {
 		return top
 	}
-	return fmt.Sprintf("%s (%s)", top, runewidth.Truncate(m.topFolderAccounts[i], 16, "…"))
+	if m.isExpanded(i) {
+		return "▾ " + top
+	}
+	return "▸ " + top
 }
 
 func (m Model) topLabels() []string {
 	labels := make([]string, 0, len(m.topFolders)+1)
 	labels = append(labels, tabLabel("All", m.folderCounts[""]))
 	for i := range m.topFolders {
-		count := m.folderCounts[m.topFolders[i]]
-		if i < len(m.topFolderAccounts) && m.topFolderAccounts[i] != "" {
-			count = m.folderCounts[m.topFolderKey(i)]
-		}
+		count := m.folderCounts[m.topFolderKey(i)]
 		labels = append(labels, tabLabel(m.topFolderLabel(i), count))
 	}
 	return labels
@@ -579,11 +576,14 @@ func subTabPrefix(top string) string {
 // overflow just truncates with an ellipsis rather than growing a second
 // scroll mechanism.
 func (m Model) renderTabRow2(w int) string {
+	pos := m.currentPos()
+	if pos.top == 0 || pos.top > len(m.topFolders) || !m.isExpanded(pos.top-1) {
+		return ""
+	}
 	kids := m.activeChildren()
 	if len(kids) == 0 {
 		return ""
 	}
-	pos := m.currentPos()
 	top := m.topFolders[pos.top-1]
 	prefix := subTabPrefix(m.topFolderLabel(pos.top - 1))
 	labels := m.subLabels(top)
@@ -628,14 +628,17 @@ func (m Model) tabHitTest(x, y int) (row, idx int) {
 		return -1, -1
 	}
 	if y == 2 {
+		pos := m.currentPos()
+		if pos.top == 0 || pos.top > len(m.topFolders) || !m.isExpanded(pos.top-1) {
+			return -1, -1
+		}
 		kids := m.activeChildren()
 		if len(kids) == 0 {
 			return -1, -1
 		}
-		pos := m.currentPos()
 		top := m.topFolders[pos.top-1]
 		labels := m.subLabels(top)
-		col := 1 + lipgloss.Width(subTabPrefix(top))
+		col := 1 + lipgloss.Width(subTabPrefix(m.topFolderLabel(pos.top-1)))
 		for i, l := range labels {
 			ww := lipgloss.Width(styleSubInact.Render(l))
 			if i == pos.sub {

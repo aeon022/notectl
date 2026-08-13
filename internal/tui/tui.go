@@ -71,7 +71,6 @@ var (
 			Bold(true)
 	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33", Dark: "75"})
 	styleFolder  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "136", Dark: "178"})
-	styleAccount = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "96", Dark: "183"})
 	styleLabel   = lipgloss.NewStyle().Foreground(colorBlue).Width(9)
 	styleSyncing = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"})
 
@@ -187,12 +186,28 @@ type Model struct {
 	// Two-row notebook tabs — see tabs.go. topFolders/subFolders are
 	// derived from folders each time it loads (buildFolderTree). tabCursor
 	// indexes the flattened tab/shift+tab sequence (tabPositions): "All",
-	// then each top-level notebook immediately followed by its own
-	// children, in order.
+	// then each top-level notebook, then — only for a top-level notebook
+	// that's been explicitly expanded (see expandedTops) — its own
+	// children in order. tab/shift+tab used to walk straight into a
+	// notebook's children the moment it became the active top-level
+	// selection, with no way to just glance across the top-level row
+	// without dragging every notebook's children along for the ride; row 2
+	// only ever shows now if you asked for it with "right"/"l".
 	topFolders []string            // top-level notebooks, row 1 (index 0 = "All")
 	subFolders map[string][]string // top-level name -> its children's full paths, row 2
 	tabCursor  int                 // index into tabPositions()
 	tabScroll  int                 // first visible row-1 tab, kept in view by ensureTabVisible
+
+	// expandedTops tracks which top-level notebooks currently show their
+	// children in row 2 — keyed by topFolderKey(i), so two collision-split
+	// tabs sharing a plain folder name (see topFolderAccounts) expand
+	// independently rather than as one. Toggled by "right"/"l" (expand, or
+	// step into the first child if already expanded) and "left"/"h"
+	// (collapse, or step up to the parent if already on a child).
+	// Deliberately not persisted — every launch starts fully collapsed, a
+	// clean top-level overview rather than picking up wherever a previous
+	// session's drill-down left off.
+	expandedTops map[string]bool
 
 	// topFolderAccounts is topFolders' parallel slice: "" for an ordinary
 	// tab (scoped by whichever account the "["/"]" indicator has active),
@@ -202,7 +217,10 @@ type Model struct {
 	// tab's own account overrides the global account filter for it
 	// (effectiveAccount), which is what makes selecting it unambiguous
 	// instead of merging both accounts' notes the way a single flat
-	// "Notizen" tab used to.
+	// "Notizen" tab used to. The tab's own label stays the plain folder
+	// name regardless (see topFolderLabel) — which specific account it's
+	// bound to is shown on renderAccountLine instead, not crammed into the
+	// tab text itself.
 	topFolderAccounts []string
 
 	// hideEmptyNotebooks, toggled by a key (see keymap), drops any notebook
@@ -318,6 +336,8 @@ var paletteCommands = []palette.Command{
 	{Name: "undo", Desc: "Undo last delete", Key: "u"},
 	{Name: "sort", Desc: "Toggle sort (date / title A–Z)", Key: "S"},
 	{Name: "hideempty", Desc: "Toggle hiding empty notebooks", Key: "H"},
+	{Name: "expand", Desc: "Expand notebook / step into its first child", Key: "l"},
+	{Name: "collapse", Desc: "Collapse notebook / step up to its parent", Key: "h"},
 	{Name: "settings", Desc: "Settings (vault path, source)", Key: "p"},
 	{Name: "sync", Desc: "Sync", Key: "s"},
 	{Name: "search", Desc: "Search notes", Key: "/"},
@@ -525,6 +545,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pendingFolderRestore != "" {
 			restore := m.pendingFolderRestore
 			m.pendingFolderRestore = ""
+			// Children are only reachable via tabPositions/resolveTabCursor
+			// once their parent is expanded (see expandedTops) — restoring
+			// into one has to expand its parent first, or the lookup below
+			// finds nothing and silently falls back to "All". Keyed by the
+			// plain top name, matching a non-collision-bound restore target
+			// (a persisted path can't record which of two collision-split
+			// tabs it meant, so this doesn't attempt to disambiguate that).
+			if i := strings.IndexByte(restore, '/'); i >= 0 && m.expandedTops != nil {
+				m.expandedTops[restore[:i]] = true
+			} else if i >= 0 {
+				m.expandedTops = map[string]bool{restore[:i]: true}
+			}
 			if cursor, ok := m.resolveTabCursor(restore); ok {
 				m.tabCursor = cursor
 				m.ensureTabVisible()
@@ -945,6 +977,45 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+	case "right", "l":
+		// On a collapsed top-level notebook with children: expand it (row 2
+		// appears, cursor stays put). On one already expanded: step onto
+		// its first child instead — mirrors the common file-tree
+		// convention (VS Code, Finder) of "right" meaning "reveal, then
+		// descend" rather than doing both at once.
+		pos := m.currentPos()
+		if pos.top == 0 || pos.top > len(m.topFolders) || pos.sub >= 0 || !m.hasChildren(pos.top-1) {
+			return m, nil
+		}
+		if !m.isExpanded(pos.top - 1) {
+			m.setExpanded(pos.top-1, true)
+			m.ensureTabVisible()
+			return m, nil
+		}
+		m.tabCursor = m.cursorFor(pos.top, 0)
+		m.ensureTabVisible()
+		m.cursor = 0
+		m.saveUIState()
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+	case "left", "h":
+		// On a child: step back up to its parent notebook. Otherwise, on an
+		// expanded top-level notebook: collapse it. Mirrors "right"/"l".
+		pos := m.currentPos()
+		if pos.top == 0 || pos.top > len(m.topFolders) {
+			return m, nil
+		}
+		if pos.sub >= 0 {
+			m.tabCursor = m.cursorFor(pos.top, -1)
+			m.ensureTabVisible()
+			m.cursor = 0
+			m.saveUIState()
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+		}
+		if m.isExpanded(pos.top - 1) {
+			m.setExpanded(pos.top-1, false)
+			m.ensureTabVisible()
+		}
+		return m, nil
 	case "[", "]":
 		// Cycle the active account directly — immediate, visible effect
 		// (header indicator changes, row 1 reloads scoped to it), not a
@@ -1809,8 +1880,10 @@ func (m Model) helpContent() string {
 		Row("j / k", "move down / up").
 		Row("g / G", "jump to top / bottom").
 		Row("pgdn/up", "page down / up").
-		Row("tab", "next notebook (walks into sub-notebooks, then the next one)").
+		Row("tab", "next notebook (steps into an expanded one's children, then the next)").
 		Row("s-tab", "previous notebook").
+		Row("l / right", "expand notebook (▸→▾), or step into its first child if already expanded").
+		Row("h / left", "collapse notebook, or step up from a child to its parent").
 		Row("[ / ]", "previous / next account (only when Apple Notes has more than one)").
 		Row("< / >", "resize panes (two-pane layout)").
 		Row(":", "command palette — type an action by name").
@@ -1913,6 +1986,9 @@ func (m Model) renderPaletteBlock() string {
 func (m Model) renderSinglePane() string {
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
+	if acct := m.renderAccountLine(m.width - 1); acct != "" {
+		b.WriteString(" " + acct + "\n")
+	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -1960,6 +2036,9 @@ func (m Model) renderTwoPane() string {
 
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
+	if acct := m.renderAccountLine(m.width - 1); acct != "" {
+		b.WriteString(" " + acct + "\n")
+	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -2042,7 +2121,6 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 	var lineToNote []int
 	cursorLine := 0
 	lastGroup := ""
-	mixedAccounts := len(m.distinctAccountsInView()) > 1
 
 	for i := range m.notes {
 		n := &m.notes[i]
@@ -2071,7 +2149,7 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 		case i == m.hoverRow:
 			rowStyle = theme.Hover
 		}
-		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ, mixedAccounts))
+		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ))
 		lineToNote = append(lineToNote, i)
 
 		if withPreview && n.Body != "" {
@@ -2099,11 +2177,16 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 }
 
 // preambleRows returns the fixed-height chrome above the note list: app
-// header + row-1 notebook tabs + (if the active notebook has children)
-// row-2 sub-notebook tabs + the divider line.
+// header + (if there's more than one account) the account line + row-1
+// notebook tabs + (if the active notebook has children AND is expanded —
+// see expandedTops) row-2 sub-notebook tabs + the divider line.
 func (m Model) preambleRows() int {
 	y := 3 // header + tab row 1 + divider
-	if len(m.activeChildren()) > 0 {
+	if m.hasMultipleAccounts() {
+		y++ // account line
+	}
+	pos := m.currentPos()
+	if pos.top > 0 && pos.top <= len(m.topFolders) && m.isExpanded(pos.top-1) && len(m.activeChildren()) > 0 {
 		y++ // tab row 2
 	}
 	return y
@@ -2195,32 +2278,16 @@ func (m Model) rowHitTest(x, y int) int {
 	return lineToNote[lineIdx]
 }
 
+// renderAppHeader is just "notectl" + the date — account context used to
+// share this one line via accountIndicator, which meant a real account name
+// (a 36-char Exchange UPN, seen live) had to be squeezed in next to both,
+// silently overflowing the line on a narrow terminal and getting
+// overwritten by the next redraw. That's what renderAccountLine below is
+// for now: its own dedicated, full-width line, so this one never has to
+// budget for an account name at all.
 func (m Model) renderAppHeader(w int) string {
 	left := styleHeader.Render("notectl")
-	dateStr := time.Now().Format("Mon, 02 Jan 2006")
-	right := styleMuted.Render(dateStr)
-
-	// Budget for whichever account indicator gets shown: whatever's left
-	// in the row after "notectl", the date, and the "   " gap between
-	// them. Both indicators below are now hard-capped to this via
-	// runewidth — a label that measured as fitting but didn't (ambiguous-
-	// width glyphs render wider in the terminal than any width library
-	// computes) used to overflow the line, wrap, and get silently
-	// overwritten by the next redraw. See notebookAccountIndicator's doc
-	// comment for the concrete case that surfaced this.
-	budget := w - lipgloss.Width(left) - runewidth.StringWidth(dateStr) - 3
-	if ind, mixed := m.notebookAccountIndicator(budget); ind != "" {
-		style := styleTabParentRef
-		if mixed {
-			style = styleSyncing
-		}
-		right = style.Render(ind) + "   " + right
-	} else if ind := m.accountIndicator(); ind != "" {
-		ind = runewidth.Truncate(ind, budget, "…")
-		if ind != "" {
-			right = styleTabParentRef.Render(ind) + "   " + right
-		}
-	}
+	right := styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006"))
 	pad := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
 		pad = 1
@@ -2253,7 +2320,7 @@ func (m Model) renderHelpBar(w int) string {
 		return styleOK.Render("✓ " + m.status)
 	}
 	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  u:undo  y:copy  S:sort  H:hide empty")
-	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:notebook  ?:help  q:quit")
+	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:notebook  l/h:expand  ?:help  q:quit")
 	pad := w - lipgloss.Width(line2) - lipgloss.Width(right)
 	if pad < 0 {
 		pad = 0
@@ -3304,7 +3371,7 @@ const detailLeftPad = "  "
 // row's highlight background didn't extend past the date column. Fixed by
 // applying rowStyle per-segment instead, which also makes it safe to
 // highlight fuzzy matches here even on the selected row.
-func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query string, showAccount bool) string {
+func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query string) string {
 	dateStr := smartDate(n.ModTime)
 	dateStyled := coloredDate(dateStr, n.ModTime) // independent color, unaffected by rowStyle
 
@@ -3314,26 +3381,15 @@ func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query str
 	}
 	title = strings.TrimSpace(title)
 
-	// Reserve the title's 6-char floor first, then give folder/tag/account
-	// meta whatever's left, truncating each to fit — the other way around
-	// (meta rendered at full length, title floored to 6 regardless of what
-	// that left) let a long folder/tag on a narrow terminal push the row
-	// past `width` altogether, since nothing here ever shrank meta back
-	// down. That overflow broke the two-pane divider's alignment (row +
-	// " │ " + preview) once row exceeded its column budget.
-	meta := "" // independent colors (folder/tag/account), unaffected by rowStyle
+	// Reserve the title's 6-char floor first, then give folder/tag meta
+	// whatever's left, truncating each to fit — the other way around (meta
+	// rendered at full length, title floored to 6 regardless of what that
+	// left) let a long folder/tag on a narrow terminal push the row past
+	// `width` altogether, since nothing here ever shrank meta back down.
+	// That overflow broke the two-pane divider's alignment (row + " │ " +
+	// preview) once row exceeded its column budget.
+	meta := "" // independent colors (folder/tag), unaffected by rowStyle
 	metaBudget := width - 16 - 6
-	// Account only rendered when the caller says the on-screen notes span
-	// more than one account (notebookAccountIndicator's "mixed" case) — see
-	// its doc comment for why a same-named notebook (e.g. two Exchange
-	// accounts each with their own "Notizen") otherwise leaves a note's
-	// real account invisible. Shown first, before folder, since it's the
-	// thing that's actually ambiguous here.
-	if showAccount && n.Account != "" && metaBudget > 1 {
-		acct := runewidth.Truncate(" ["+n.Account+"]", metaBudget, "…")
-		meta += styleAccount.Render(acct)
-		metaBudget -= runewidth.StringWidth(acct)
-	}
 	if n.Folder != "" && metaBudget > 1 {
 		folder := runewidth.Truncate(" "+n.Folder, metaBudget, "…")
 		meta += styleFolder.Render(folder)

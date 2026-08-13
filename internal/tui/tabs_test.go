@@ -1,9 +1,9 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/mattn/go-runewidth"
 )
@@ -88,32 +88,31 @@ func TestAccountIndicator(t *testing.T) {
 	}
 }
 
-// Regression test for the real collision on this machine: a note's account
-// disagreement between a long Exchange UPN and a shorter account name used
-// to blow the header's width budget and get silently swallowed by the
-// terminal's line wrap on the very next redraw (looked like the label
-// flashing and disappearing). notebookAccountIndicator must now never
-// return a label wider than the budget it's given, for any budget.
-func TestNotebookAccountIndicator_NeverExceedsWidthBudget(t *testing.T) {
+// renderAccountLine replaced the old header-embedded account indicator,
+// whose fixed, shared-with-"notectl"-and-the-date width budget was exactly
+// what caused a real account name (a 36-char Exchange UPN, seen live) to
+// silently overflow the line and get overwritten by the next redraw. Its
+// own full-width line removes that budget pressure, but must still never
+// itself exceed whatever width it's actually given (a narrow terminal, a
+// resize mid-render) — this pins that, plus that a tab bound to a specific
+// account (see topFolderAccounts) names that account, not the global
+// "["/"]" filter state.
+func TestRenderAccountLine_NamesBoundAccountAndNeverExceedsWidth(t *testing.T) {
 	longAccount := "2330069032@hochschule-burgenland.at"
-	shortAccount := "Die Brücke || Gerwin"
 	m := Model{
-		accounts:   []string{longAccount, shortAccount, "iCloud"},
-		topFolders: []string{"Notizen"},
-		tabCursor:  1, // pos{top:1,sub:-1} -> activeFolder() == "Notizen"
-		notes: []models.Note{
-			{Account: longAccount, Folder: "Notizen"},
-			{Account: shortAccount, Folder: "Notizen"},
-		},
+		accounts:          []string{longAccount, "Die Brücke || Gerwin", "iCloud"},
+		topFolders:        []string{"Notizen"},
+		topFolderAccounts: []string{longAccount},
+		tabCursor:         1, // pos{top:1,sub:-1} -> activeFolderAccount() == longAccount
 	}
-	for _, budget := range []int{4, 10, 20, 40, 60, 100} {
-		label, mixed := m.notebookAccountIndicator(budget)
-		if got := runewidth.StringWidth(label); got > budget {
-			t.Errorf("budget %d: label %q rendered at %d columns, exceeds budget", budget, label, got)
+	for _, w := range []int{4, 10, 20, 40, 60, 100} {
+		line := m.renderAccountLine(w)
+		if got := runewidth.StringWidth(line); got > w {
+			t.Errorf("width %d: line %q rendered at %d columns, exceeds width", w, line, got)
 		}
-		if label != "" && !mixed {
-			t.Errorf("budget %d: label %q should be flagged mixed for a real 2-account collision", budget, label)
-		}
+	}
+	if line := m.renderAccountLine(200); !strings.Contains(line, longAccount) {
+		t.Errorf("renderAccountLine(200) = %q, want it to name the bound account %q", line, longAccount)
 	}
 }
 
@@ -191,5 +190,76 @@ func TestBuildAccountAwareFolderTree_HideEmptyDropsEmptySplitTab(t *testing.T) {
 
 	if len(tops) != 1 || tops[0] != "Notizen" || topAccounts[0] != "FH Burgenland" {
 		t.Errorf("tops/topAccounts = %v/%v, want exactly [Notizen]/[FH Burgenland] with the empty Brücke tab hidden", tops, topAccounts)
+	}
+}
+
+// A collapsed top-level notebook's children must be entirely absent from
+// tabPositions — not just skipped over — so tab/shift+tab never lands on
+// one until it's been explicitly expanded via "right"/"l". This is the
+// replacement for the old auto-reveal-on-select behavior that made
+// tab/shift+tab always drag every notebook's children along with it.
+func TestTabPositions_ChildrenOnlyReachableWhenExpanded(t *testing.T) {
+	m := Model{
+		topFolders: []string{"Projects"},
+		subFolders: map[string][]string{"Projects": {"Projects/Git"}},
+	}
+
+	positions := m.tabPositions()
+	if len(positions) != 2 {
+		t.Fatalf("collapsed: tabPositions() = %v, want exactly [{0,-1} {1,-1}] (no child)", positions)
+	}
+
+	m.setExpanded(0, true)
+	positions = m.tabPositions()
+	if len(positions) != 3 || positions[2] != (tabPos{1, 0}) {
+		t.Fatalf("expanded: tabPositions() = %v, want [{0,-1} {1,-1} {1,0}]", positions)
+	}
+
+	m.setExpanded(0, false)
+	positions = m.tabPositions()
+	if len(positions) != 2 {
+		t.Errorf("re-collapsed: tabPositions() = %v, want the child gone again", positions)
+	}
+}
+
+// topFolderLabel is the only place a parent notebook announces it has
+// children at all (see the package doc comment) — must show "▸" collapsed,
+// "▾" expanded, and no marker for a notebook with nothing underneath it.
+func TestTopFolderLabel_DisclosureMarker(t *testing.T) {
+	m := Model{
+		topFolders: []string{"Projects", "Baby"},
+		subFolders: map[string][]string{"Projects": {"Projects/Git"}},
+	}
+
+	if got := m.topFolderLabel(0); got != "▸ Projects" {
+		t.Errorf("collapsed, has children: topFolderLabel(0) = %q, want %q", got, "▸ Projects")
+	}
+	if got := m.topFolderLabel(1); got != "Baby" {
+		t.Errorf("no children: topFolderLabel(1) = %q, want plain %q (no marker)", got, "Baby")
+	}
+
+	m.setExpanded(0, true)
+	if got := m.topFolderLabel(0); got != "▾ Projects" {
+		t.Errorf("expanded: topFolderLabel(0) = %q, want %q", got, "▾ Projects")
+	}
+}
+
+// Two collision-split tabs sharing a plain folder name (see
+// topFolderAccounts) must expand independently — keyed by topFolderKey
+// (folder+account composite), not just the folder name, or expanding one
+// account's "Notizen" would also silently expand the other account's.
+func TestSetExpanded_CollisionSplitTabsExpandIndependently(t *testing.T) {
+	m := Model{
+		topFolders:        []string{"Notizen", "Notizen"},
+		topFolderAccounts: []string{"FH Burgenland", "Die Brücke"},
+		subFolders:        map[string][]string{"Notizen": {"Notizen/Archiv"}},
+	}
+
+	m.setExpanded(0, true)
+	if !m.isExpanded(0) {
+		t.Error("isExpanded(0) = false after setExpanded(0, true)")
+	}
+	if m.isExpanded(1) {
+		t.Error("isExpanded(1) = true — expanding tab 0 (FH Burgenland) should not expand tab 1 (Die Brücke)")
 	}
 }
