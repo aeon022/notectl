@@ -437,7 +437,7 @@ func Run(openPath string) error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadNotesCmd("", ""), doSyncCmd(), tea.WindowSize(), m.sp.Tick, loadLastSyncedCmd())
+	return tea.Batch(loadNotesCmd("", "", ""), doSyncCmd(), tea.WindowSize(), m.sp.Tick, loadLastSyncedCmd())
 }
 
 type lastSyncedLoadedMsg struct{ t time.Time }
@@ -560,7 +560,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cursor, ok := m.resolveTabCursor(restore); ok {
 				m.tabCursor = cursor
 				m.ensureTabVisible()
-				return m, loadNotesCmd(m.effectiveAccount(), restore)
+				return m, loadNotesCmd(m.effectiveAccount(), restore, m.activeAccount())
 			}
 		}
 		// Try to restore cursor to the same note by ID.
@@ -607,7 +607,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(fmt.Sprintf("Synced %d notes", msg.count))
 			m.lastSynced = time.Now()
 			_ = lastsync.Save(config.LastSyncedPath(), m.lastSynced)
-			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 		}
 
 	case writeDoneMsg:
@@ -632,7 +632,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.hideEmptyNotebooks = false
 				m.saveUIState()
 			}
-			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 		}
 
 	case noteRestoredMsg:
@@ -644,7 +644,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				name = msg.note.Title
 			}
 			m.setStatus("Restored: " + name)
-			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 		}
 
 	case deletedMsg:
@@ -658,7 +658,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatus("Settings saved")
 			m.view = viewList
-			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 		}
 
 	case appleBodyMsg:
@@ -767,7 +767,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ensureTabVisible()
 					m.cursor = 0
 					m.saveUIState()
-					return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+					return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 				}
 				return m, nil
 			}
@@ -968,7 +968,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
-		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 	case "shift+tab":
 		if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor - 1 + n) % n
@@ -976,7 +976,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
-		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 	case "right", "l":
 		// On a collapsed top-level notebook with children: expand it (row 2
 		// appears, cursor stays put). On one already expanded: step onto
@@ -996,7 +996,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
-		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 	case "left", "h":
 		// On a child: step back up to its parent notebook. Otherwise, on an
 		// expanded top-level notebook: collapse it. Mirrors "right"/"l".
@@ -1009,7 +1009,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ensureTabVisible()
 			m.cursor = 0
 			m.saveUIState()
-			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 		}
 		if m.isExpanded(pos.top - 1) {
 			m.setExpanded(pos.top-1, false)
@@ -1033,7 +1033,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ensureTabVisible()
 			m.cursor = 0
 			m.saveUIState()
-			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 		}
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		// jump to the nth visible (on-screen) note, date-group headers not
@@ -1176,7 +1176,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatus("Showing empty notebooks")
 		}
-		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 	case "y":
 		if len(m.notes) > 0 {
 			m.setStatus("Copied: " + runeLimit(m.notes[m.cursor].Title, 30))
@@ -2901,7 +2901,27 @@ func formatMarkdownTable(lines []string, width ...int) []string {
 // previous behavior). Store.Filter.Query / the SQL LIKE path still exists
 // and is still used by `notectl search` and the MCP search tool, just not
 // from here anymore.
-func loadNotesCmd(account, folder string) tea.Cmd {
+// loadNotesCmd fetches the note list, scoped to account (the note filter —
+// effectiveAccount(), which can be a collision-split tab's own bound
+// account even while browsing "All accounts", see topFolderAccounts) and
+// folder, plus the data needed to rebuild the row-1/2 tab tree.
+//
+// globalAccount is deliberately a SEPARATE parameter from account, not
+// reused from it — it's the "["/"]" filter's own state (activeAccount()),
+// and it alone decides which tab-tree shape gets rebuilt below. An earlier
+// version used account for both, which conflated "which account filters
+// the notes I'm looking at" with "which account the user explicitly
+// selected": landing on a collision-split tab (e.g. one of two "Notizen"
+// tabs) set account to that tab's own bound account, and since that made
+// account != "", the tree got rebuilt from that ONE account's own folders
+// only — the entire row-1 tab bar collapsed down to whatever that single
+// account happened to have (confirmed live: "All accounts (3)" still
+// showing in the header while row 1 silently shrank to just "All" +
+// "Notizen"). Keying the tree choice on globalAccount instead means the
+// tab bar stays the full "All accounts" tree the whole time you're
+// browsing within it, exactly as long as you haven't explicitly cycled
+// "["/"]" to a specific account yourself.
+func loadNotesCmd(account, folder, globalAccount string) tea.Cmd {
 	return func() tea.Msg {
 		s, err := store.New(config.DBPath(), config.Shared())
 		if err != nil {
@@ -2915,8 +2935,8 @@ func loadNotesCmd(account, folder string) tea.Cmd {
 		}
 
 		var infos []store.FolderInfo
-		if account != "" {
-			infos, _ = s.ListFolderInfoByAccount(ctx, account)
+		if globalAccount != "" {
+			infos, _ = s.ListFolderInfoByAccount(ctx, globalAccount)
 		} else {
 			infos, _ = s.ListFolderInfo(ctx)
 		}
@@ -2926,7 +2946,7 @@ func loadNotesCmd(account, folder string) tea.Cmd {
 		// still needs the grand total under that key — CountByFolder
 		// already computes it internally, just cheap enough to ask for
 		// again here rather than changing FolderInfo's shape for one int.
-		if plain, perr := s.CountByFolder(ctx, account); perr == nil {
+		if plain, perr := s.CountByFolder(ctx, globalAccount); perr == nil {
 			counts[""] = plain[""]
 		}
 
@@ -2939,7 +2959,7 @@ func loadNotesCmd(account, folder string) tea.Cmd {
 		// account is already unambiguous on its own, so skip the extra
 		// queries there.
 		var byAccount map[string][]store.FolderInfo
-		if account == "" && len(accounts) > 1 {
+		if globalAccount == "" && len(accounts) > 1 {
 			byAccount = map[string][]store.FolderInfo{}
 			for _, a := range accounts {
 				ai, _ := s.ListFolderInfoByAccount(ctx, a)

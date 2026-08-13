@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aeon022/notectl/internal/models"
+	"github.com/aeon022/notectl/internal/store"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -417,6 +419,172 @@ func TestFormatNoteRow_LongFolderNeverOverflowsWidth(t *testing.T) {
 		row := formatNoteRow(&n, w, styleSelected, "")
 		if got := lipgloss.Width(row); got != w {
 			t.Errorf("width %d: expected rendered row to be exactly %d columns, got %d", w, w, got)
+		}
+	}
+}
+
+// Regression test for a real, live-reproduced bug: landing on a collision-
+// split tab (e.g. one of two accounts' own "Notizen") set loadNotesCmd's
+// account parameter to that tab's bound account, and since the tab-tree
+// rebuild in the notesLoadedMsg handler branched on that same parameter,
+// the ENTIRE row-1 tab bar collapsed down to just that one account's own
+// folders — confirmed live via screenshots: "All accounts (3)" still shown
+// in the header while row 1 silently shrank from 4+ notebooks to just
+// "All" + "Notizen". loadNotesCmd now takes globalAccount as a separate
+// parameter (the "["/"]" filter's own state) specifically so the tree
+// choice stays keyed on that, not on whichever account happens to be
+// filtering the note list — this pins that a bound tab's account (account)
+// no longer collapses the tree as long as globalAccount is still "".
+func TestLoadNotesCmd_BoundTabAccountDoesNotCollapseAccountAwareTree(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "notectl.db")
+	viper.Set("db_path", dbPath)
+	t.Cleanup(func() { viper.Set("db_path", "") })
+
+	s, err := store.New(dbPath, false)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	now := time.Now()
+	for _, n := range []models.Note{
+		{ID: "apple-1", Title: "FH note", Folder: "Notizen", Account: "FH Burgenland", Source: "apple", ModTime: now, Created: now},
+		{ID: "apple-2", Title: "Brücke note", Folder: "Notizen", Account: "Die Brücke", Source: "apple", ModTime: now, Created: now},
+		{ID: "apple-3", Title: "Baby note", Folder: "Baby", Account: "FH Burgenland", Source: "apple", ModTime: now, Created: now},
+	} {
+		n := n
+		if err := s.Upsert(t.Context(), &n); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+	}
+	s.Close()
+
+	// Simulates being on the "Notizen (FH Burgenland)" collision-split tab
+	// (account = its bound account) while still browsing "All accounts"
+	// overall (globalAccount = "").
+	msg := loadNotesCmd("FH Burgenland", "Notizen", "")()
+	loaded, ok := msg.(notesLoadedMsg)
+	if !ok {
+		t.Fatalf("loadNotesCmd() returned %T, want notesLoadedMsg", msg)
+	}
+	if loaded.folderInfoByAccount == nil {
+		t.Fatal("folderInfoByAccount is nil — the tab tree would collapse to just the bound account's own folders instead of staying account-aware")
+	}
+	if _, ok := loaded.folderInfoByAccount["Die Brücke"]; !ok {
+		t.Error(`folderInfoByAccount missing "Die Brücke" — the other account's notebooks disappeared from the tree`)
+	}
+	if len(loaded.notes) != 1 || loaded.notes[0].Title != "FH note" {
+		t.Errorf("notes = %v, want exactly the one note actually in the bound tab (FH Burgenland/Notizen)", loaded.notes)
+	}
+}
+
+// drainCmd runs a tea.Cmd and feeds every message it produces back into
+// Update, recursively, so a chain of Cmd -> Msg -> another Cmd (exactly
+// what tab/shift+tab triggers: a key press returns loadNotesCmd, which
+// resolves to notesLoadedMsg, which the Update case for it handles without
+// itself returning another Cmd here) settles completely before the caller
+// inspects the resulting Model — matching what actually happens once
+// bubbletea's real runtime loop executes a Cmd, not just what a single
+// Update call alone would show.
+func drainCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	for cmd != nil {
+		msg := cmd()
+		if msg == nil {
+			return m
+		}
+		var mi tea.Model
+		mi, cmd = m.Update(msg)
+		m = mi.(Model)
+	}
+	return m
+}
+
+// End-to-end regression test for the real, screenshotted bug: walking
+// tab/shift+tab through the actual app (not just calling loadNotesCmd in
+// isolation) against real per-account folder data reproducing the live
+// collision (two accounts each with their own "Notizen", one of them
+// currently empty). Drives the real Model.Update loop — boot, then every
+// forward tab step, then every step back — and asserts the row-1 tab count
+// never changes mid-walk. It's supposed to stay exactly constant the whole
+// time; the live bug made it collapse from 6 notebooks down to 1 the
+// moment the walk landed on a collision-split tab, then partially and
+// incorrectly "recover" on the way back — both visible in the screenshots
+// that reported this.
+func TestFullAppWalk_TabTreeNeverCollapsesMidWalk(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "notectl.db")
+	viper.Set("db_path", dbPath)
+	t.Cleanup(func() { viper.Set("db_path", "") })
+
+	s, err := store.New(dbPath, false)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	now := time.Now()
+	for _, n := range []models.Note{
+		{ID: "apple-1", Title: "Baby note", Folder: "Baby", Account: "FH Burgenland", Source: "apple", ModTime: now, Created: now},
+		{ID: "apple-2", Title: "CM note", Folder: "Change-Management", Account: "FH Burgenland", Source: "apple", ModTime: now, Created: now},
+		{ID: "apple-3", Title: "Notes note", Folder: "Notes", Account: "FH Burgenland", Source: "apple", ModTime: now, Created: now},
+		{ID: "apple-4", Title: "FH Notizen", Folder: "Notizen", Account: "FH Burgenland", Source: "apple", ModTime: now, Created: now},
+		{ID: "apple-5", Title: "Brücke Notizen", Folder: "Notizen", Account: "Die Brücke", Source: "apple", ModTime: now, Created: now},
+	} {
+		n := n
+		if err := s.Upsert(t.Context(), &n); err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+	}
+	if err := s.ReplaceFolders(t.Context(), "apple", map[string][]string{
+		"FH Burgenland": {"Baby", "Change-Management", "Notes", "Notizen"},
+		"Die Brücke":    {"Notizen"},
+	}); err != nil {
+		t.Fatalf("ReplaceFolders: %v", err)
+	}
+	s.Close()
+
+	m := Model{width: 120, height: 40, sortByDate: true, hoverRow: -1, lastClickRow: -1}
+	m = drainCmd(t, m, loadNotesCmd("", "", ""))
+
+	const wantTops = 5 // Baby, Change-Management, Notes, Notizen(FH), Notizen(Brücke)
+	if len(m.topFolders) != wantTops {
+		t.Fatalf("after boot: len(topFolders) = %d, want %d — %v", len(m.topFolders), wantTops, m.topFolders)
+	}
+
+	n := len(m.tabPositions())
+	for step := 0; step < n; step++ {
+		mi, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		m = drainCmd(t, mi.(Model), cmd)
+		if len(m.topFolders) != wantTops {
+			t.Fatalf("forward step %d (tabCursor=%d): len(topFolders) = %d, want %d — tab tree collapsed mid-walk: %v",
+				step, m.tabCursor, len(m.topFolders), wantTops, m.topFolders)
+		}
+		assertNotesMatchActiveTab(t, m, "forward", step)
+	}
+	for step := 0; step < n; step++ {
+		mi, cmd := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		m = drainCmd(t, mi.(Model), cmd)
+		if len(m.topFolders) != wantTops {
+			t.Fatalf("backward step %d (tabCursor=%d): len(topFolders) = %d, want %d — tab tree collapsed mid-walk: %v",
+				step, m.tabCursor, len(m.topFolders), wantTops, m.topFolders)
+		}
+		assertNotesMatchActiveTab(t, m, "backward", step)
+	}
+}
+
+// assertNotesMatchActiveTab checks that every note currently loaded
+// actually belongs to the tab that's supposedly selected — the second
+// symptom visible in the real screenshots alongside the tab tree
+// collapsing: after navigating back, the cursor landed on one notebook
+// (e.g. "Baby") while the note list still showed a note from a completely
+// different one ("Notizen"), a stale-content mismatch left over from the
+// tree reshaping mid-walk.
+func assertNotesMatchActiveTab(t *testing.T, m Model, dir string, step int) {
+	t.Helper()
+	folder := m.activeFolder()
+	account := m.effectiveAccount()
+	for _, note := range m.notes {
+		if folder != "" && note.Folder != folder && !strings.HasPrefix(note.Folder, folder+"/") {
+			t.Fatalf("%s step %d: note %q has folder %q, want %q (or a descendant) — stale/mismatched note list", dir, step, note.Title, note.Folder, folder)
+		}
+		if account != "" && note.Account != account {
+			t.Fatalf("%s step %d: note %q has account %q, want %q — stale/mismatched note list", dir, step, note.Title, note.Account, account)
 		}
 	}
 }
