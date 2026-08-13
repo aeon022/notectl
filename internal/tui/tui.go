@@ -77,18 +77,18 @@ var (
 	styleTabActive = lipgloss.NewStyle().Bold(true).
 			Foreground(theme.OnAccent).
 			Background(colorBlue).
-			Padding(0, 3)
+			Padding(0, 1)
 	styleTabInact = lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "237", Dark: "252"}).
 			Background(colorTabBg).
-			Padding(0, 3)
+			Padding(0, 1)
 	// styleTabActiveDim marks the row-1 tab whose sub-notebook is active in
 	// row 2 — still "selected" (bold, tinted) but visually receded since one
 	// of its children (row 2) is the actual current focus.
 	styleTabActiveDim = lipgloss.NewStyle().Bold(true).
 				Foreground(colorBlue).
 				Background(colorTabBg).
-				Padding(0, 3)
+				Padding(0, 1)
 	// Row 2 (sub-notebooks) is deliberately plain text, not filled pills —
 	// its contents change with every parent and read better as a
 	// lightweight breadcrumb than another row of buttons.

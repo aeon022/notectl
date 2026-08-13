@@ -264,14 +264,22 @@ func TestSetExpanded_CollisionSplitTabsExpandIndependently(t *testing.T) {
 	}
 }
 
-// Regression test for a real, live-reproduced bug: an uncapped tab-name
-// width let one long notebook name ("Change-Management", 17 columns) force
-// tabWindow to evict two tabs for a single one-step tab/shift+tab move —
-// press it once, watch two previously-visible tabs disappear together, not
-// just the one that had to make room. topFolderNameWidth capping every
-// name fixes this for realistic terminal widths (a genuinely tiny terminal,
-// ~35 columns or less, can still only fit one tab at a time regardless —
-// that's an accepted, unavoidable edge case, not what this pins).
+// Regression test for a real, live-reproduced bug: variable-width row-1
+// tabs let tabWindow evict two tabs for a single one-step tab/shift+tab
+// move — press it once, watch two previously-visible tabs disappear
+// together, not just the one that had to make room. First reproduced past
+// "Change-Management" (an unusually long name), but capping just that name
+// turned out not to fix it in general: an exhaustive sweep still found the
+// same jump recurring at plenty of other, entirely ordinary terminal widths
+// (e.g. exactly at "Notes"->"Notizen", nothing unusually wide involved) —
+// inherent to *any* variable-width greedy packing, not specific to one long
+// label. row1TabWidth's fixed-width padding (see padTabLabel) is what
+// actually closes this: with every tab costing the same, the count that
+// fits in a given width is a constant, so a one-index cursor move can only
+// ever need exactly one more (or fewer) step of scroll. This sweeps every
+// width from 5 to 250 columns, not a handful of samples — the earlier,
+// sample-based version of this test passed while the bug was still live,
+// because none of its six samples happened to land on a bad width.
 func TestTabWindow_SingleStepNeverEvictsMoreThanOneTab(t *testing.T) {
 	m := Model{
 		topFolders:        []string{"Baby", "Change-Management", "Notes", "Notizen", "Notizen", "Projects"},
@@ -290,7 +298,7 @@ func TestTabWindow_SingleStepNeverEvictsMoreThanOneTab(t *testing.T) {
 			"Projects": 1,
 		},
 	}
-	for _, width := range []int{50, 60, 70, 80, 100, 120} {
+	for width := 5; width <= 250; width++ {
 		m.width = width
 		m.tabCursor = 0
 		m.tabScroll = 0
@@ -301,7 +309,7 @@ func TestTabWindow_SingleStepNeverEvictsMoreThanOneTab(t *testing.T) {
 			before := m.tabScroll
 			start, _ := tabWindow(labels, pos.top, before, m.width-1)
 			if delta := start - before; delta > 1 {
-				t.Errorf("width=%d step=%d: scroll jumped from %d to %d (delta %d) on a single tab-step, evicting more than one tab at once", width, step, before, start, delta)
+				t.Fatalf("width=%d step=%d: scroll jumped from %d to %d (delta %d) on a single tab-step, evicting more than one tab at once", width, step, before, start, delta)
 			}
 			m.tabScroll = start
 			m.tabCursor = (m.tabCursor + 1) % n

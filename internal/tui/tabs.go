@@ -469,12 +469,39 @@ func (m Model) topFolderLabel(i int) string {
 	return "▸ " + top
 }
 
+// row1TabWidth is every row-1 tab's fixed rendered width (name+marker+count,
+// not counting the pill's own Padding). Uniform width — not just a per-name
+// cap — is what actually guarantees tabWindow's scroll can never advance by
+// more than one tab for a single cursor step: with every tab costing
+// exactly the same, how many fit in a given w is a constant, so moving the
+// active tab one index past the current window always needs exactly one
+// more step of scroll, never two. A per-name width cap alone (an earlier
+// version of this fix) still let two tabs evict at once at plenty of
+// realistic terminal widths — capping only bounds the worst case, it
+// doesn't make the arithmetic exact the way equal widths do. Confirmed via
+// an exhaustive width×tab sweep with real folder data from this machine.
+const row1TabWidth = 20
+
+// padTabLabel pads or truncates text to exactly row1TabWidth, so every
+// row-1 tab (see topLabels) occupies identical width — see row1TabWidth's
+// doc comment for why that's load-bearing, not cosmetic. Row 2 (subLabels)
+// deliberately doesn't use this: it has no independent scrolling to keep
+// predictable (see renderTabRow2's doc comment), so padding would only cost
+// visual density for no benefit there.
+func padTabLabel(text string) string {
+	w := runewidth.StringWidth(text)
+	if w > row1TabWidth {
+		return runewidth.Truncate(text, row1TabWidth, "…")
+	}
+	return text + strings.Repeat(" ", row1TabWidth-w)
+}
+
 func (m Model) topLabels() []string {
 	labels := make([]string, 0, len(m.topFolders)+1)
-	labels = append(labels, tabLabel("All", m.folderCounts[""]))
+	labels = append(labels, padTabLabel(tabLabel("All", m.folderCounts[""])))
 	for i := range m.topFolders {
 		count := m.folderCounts[m.topFolderKey(i)]
-		labels = append(labels, tabLabel(m.topFolderLabel(i), count))
+		labels = append(labels, padTabLabel(tabLabel(m.topFolderLabel(i), count)))
 	}
 	return labels
 }
@@ -501,6 +528,24 @@ func tabWidth(label string, active bool) int {
 // advances scroll and retries, so the active tab is always on screen. It
 // always includes at least one tab even if that single tab alone overflows
 // w, so a very narrow terminal still shows something clickable.
+// growForward returns the largest end such that labels[scroll:end] fits
+// within w — always includes at least one tab (labels[scroll] itself) even
+// if it alone overflows w, so a very narrow terminal still shows something
+// clickable rather than nothing.
+func growForward(labels []string, activeIdx, scroll, w int) (end int) {
+	total := 0
+	end = scroll
+	for end < len(labels) {
+		ww := tabWidth(labels[end], end == activeIdx) + 2
+		if total+ww > w && end > scroll {
+			break
+		}
+		total += ww
+		end++
+	}
+	return end
+}
+
 func tabWindow(labels []string, activeIdx, scroll, w int) (start, end int) {
 	if scroll < 0 {
 		scroll = 0
@@ -508,23 +553,34 @@ func tabWindow(labels []string, activeIdx, scroll, w int) (start, end int) {
 	if scroll > activeIdx {
 		scroll = activeIdx
 	}
-	for {
-		total := 0
-		end = scroll
-		for end < len(labels) {
-			ww := tabWidth(labels[end], end == activeIdx) + 2
-			if total+ww > w && end > scroll {
-				break
-			}
-			total += ww
-			end++
-		}
-		if activeIdx < end {
+	if end := growForward(labels, activeIdx, scroll, w); activeIdx < end {
+		return scroll, end
+	}
+	// activeIdx doesn't fit growing forward from the current scroll.
+	// Retrying growForward at scroll+1, scroll+2, ... (front-anchored, one
+	// step at a time) was the previous approach here — it can still require
+	// more than one retry to succeed, meaning a single-index cursor move
+	// (one "tab" press) could jump scroll by more than 1, evicting two or
+	// more previously-visible tabs at once instead of just the one that had
+	// to make room (confirmed live and with real folder data from this
+	// machine: moving from "Notes" straight to "Notizen" dropped two tabs
+	// together at several realistic terminal widths, not only past an
+	// unusually wide label). Anchoring activeIdx itself and growing
+	// backward instead finds the smallest possible scroll that includes it
+	// directly — no retrying required — so a one-index cursor move only
+	// ever changes what's visible by the minimum the width budget actually
+	// forces, never more.
+	newScroll := activeIdx
+	total := tabWidth(labels[activeIdx], true) + 2
+	for newScroll > 0 {
+		ww := tabWidth(labels[newScroll-1], false) + 2
+		if total+ww > w {
 			break
 		}
-		scroll++
+		total += ww
+		newScroll--
 	}
-	return scroll, end
+	return newScroll, growForward(labels, activeIdx, newScroll, w)
 }
 
 // ensureTabVisible reclamps m.tabScroll so the active top-level tab is
