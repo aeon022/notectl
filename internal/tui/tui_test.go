@@ -379,7 +379,7 @@ func TestFormatNoteRow_SelectedBackgroundSpansFullWidth(t *testing.T) {
 	defer lipgloss.SetColorProfile(termenv.Ascii)
 
 	n := models.Note{Title: "hello", ModTime: time.Now()}
-	row := formatNoteRow(&n, 60, styleSelected, "")
+	row := formatNoteRow(&n, 60, styleSelected, "", false)
 	if lipgloss.Width(row) != 60 {
 		t.Errorf("expected the rendered row to be exactly 60 columns wide, got %d", lipgloss.Width(row))
 	}
@@ -414,10 +414,22 @@ func TestFormatNoteRow_LongFolderNeverOverflowsWidth(t *testing.T) {
 		ModTime: time.Now(),
 	}
 	for _, w := range []int{40, 60, 100} {
-		row := formatNoteRow(&n, w, styleSelected, "")
+		row := formatNoteRow(&n, w, styleSelected, "", false)
 		if got := lipgloss.Width(row); got != w {
 			t.Errorf("width %d: expected rendered row to be exactly %d columns, got %d", w, w, got)
 		}
+	}
+}
+
+func TestFormatNoteRow_AccountTagOnlyShownWhenRequested(t *testing.T) {
+	n := models.Note{Title: "hello", Account: "Arbeit", ModTime: time.Now()}
+	lipgloss.SetColorProfile(termenv.Ascii)
+
+	if row := formatNoteRow(&n, 60, styleSelected, "", false); strings.Contains(row, "Arbeit") {
+		t.Errorf("expected no account tag when showAccount is false, got %q", row)
+	}
+	if row := formatNoteRow(&n, 60, styleSelected, "", true); !strings.Contains(row, "[Arbeit]") {
+		t.Errorf("expected account tag [Arbeit] when showAccount is true, got %q", row)
 	}
 }
 

@@ -71,6 +71,7 @@ var (
 			Bold(true)
 	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33", Dark: "75"})
 	styleFolder  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "136", Dark: "178"})
+	styleAccount = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "96", Dark: "183"})
 	styleLabel   = lipgloss.NewStyle().Foreground(colorBlue).Width(9)
 	styleSyncing = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"})
 
@@ -1969,6 +1970,7 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 	var lineToNote []int
 	cursorLine := 0
 	lastGroup := ""
+	_, mixedAccounts := m.notebookAccountIndicator()
 
 	for i := range m.notes {
 		n := &m.notes[i]
@@ -1997,7 +1999,7 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 		case i == m.hoverRow:
 			rowStyle = theme.Hover
 		}
-		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ))
+		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ, mixedAccounts))
 		lineToNote = append(lineToNote, i)
 
 		if withPreview && n.Body != "" {
@@ -3174,7 +3176,7 @@ const detailLeftPad = "  "
 // row's highlight background didn't extend past the date column. Fixed by
 // applying rowStyle per-segment instead, which also makes it safe to
 // highlight fuzzy matches here even on the selected row.
-func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query string) string {
+func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query string, showAccount bool) string {
 	dateStr := smartDate(n.ModTime)
 	dateStyled := coloredDate(dateStr, n.ModTime) // independent color, unaffected by rowStyle
 
@@ -3184,15 +3186,26 @@ func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query str
 	}
 	title = strings.TrimSpace(title)
 
-	// Reserve the title's 6-char floor first, then give folder/tag meta
-	// whatever's left, truncating each to fit — the other way around (meta
-	// rendered at full length, title floored to 6 regardless of what that
-	// left) let a long folder/tag on a narrow terminal push the row past
-	// `width` altogether, since nothing here ever shrank meta back down.
-	// That overflow broke the two-pane divider's alignment (row + " │ " +
-	// preview) once row exceeded its column budget.
-	meta := "" // independent colors (folder/tag), unaffected by rowStyle
+	// Reserve the title's 6-char floor first, then give folder/tag/account
+	// meta whatever's left, truncating each to fit — the other way around
+	// (meta rendered at full length, title floored to 6 regardless of what
+	// that left) let a long folder/tag on a narrow terminal push the row
+	// past `width` altogether, since nothing here ever shrank meta back
+	// down. That overflow broke the two-pane divider's alignment (row +
+	// " │ " + preview) once row exceeded its column budget.
+	meta := "" // independent colors (folder/tag/account), unaffected by rowStyle
 	metaBudget := width - 16 - 6
+	// Account only rendered when the caller says the on-screen notes span
+	// more than one account (notebookAccountIndicator's "mixed" case) — see
+	// its doc comment for why a same-named notebook (e.g. two Exchange
+	// accounts each with their own "Notizen") otherwise leaves a note's
+	// real account invisible. Shown first, before folder, since it's the
+	// thing that's actually ambiguous here.
+	if showAccount && n.Account != "" && metaBudget > 1 {
+		acct := runewidth.Truncate(" ["+n.Account+"]", metaBudget, "…")
+		meta += styleAccount.Render(acct)
+		metaBudget -= runewidth.StringWidth(acct)
+	}
 	if n.Folder != "" && metaBudget > 1 {
 		folder := runewidth.Truncate(" "+n.Folder, metaBudget, "…")
 		meta += styleFolder.Render(folder)

@@ -221,13 +221,24 @@ func (m Model) notebookAccountIndicator() (label string, mixed bool) {
 		seen[n.Account] = true
 		distinct = append(distinct, n.Account)
 	}
+	sort.Strings(distinct)
 	switch len(distinct) {
 	case 0:
 		return "", false
 	case 1:
 		return distinct[0], false
+	case 2:
+		// Named explicitly rather than just "2 accounts mixed" — the
+		// exact-two case is common enough (e.g. a Uni + Arbeit Exchange
+		// account both syncing a same-named notebook) that naming both
+		// right in the header saves a trip into the note list to find out
+		// which two. Falls back to the generic count form only if the pair
+		// of names themselves would already crowd the header.
+		if label := fmt.Sprintf("⚠ %s ↔ %s", distinct[0], distinct[1]); lipgloss.Width(label) <= 40 {
+			return label, true
+		}
+		return fmt.Sprintf("⚠ %d accounts mixed here", len(distinct)), true
 	default:
-		sort.Strings(distinct)
 		return fmt.Sprintf("⚠ %d accounts mixed here", len(distinct)), true
 	}
 }
