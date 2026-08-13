@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/aeon022/notectl/internal/models"
+	"github.com/aeon022/notectl/internal/store"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -122,8 +123,10 @@ func TestNotebookAccountIndicator_NeverExceedsWidthBudget(t *testing.T) {
 // buildFolderTree once notes are scoped to one account's own folder list
 // before it's called — this documents that buildFolderTree itself is
 // account-agnostic by design (see loadNotesCmd, which calls
-// ListFoldersByAccount to pre-scope the input rather than teaching this
-// function about accounts).
+// ListFolderInfoByAccount to pre-scope the input for a single selected
+// account rather than teaching this function about accounts;
+// buildAccountAwareFolderTree is the "All accounts" sibling that does need
+// to know about them, see its own doc comment).
 func TestBuildFolderTree_ScopedInputAvoidsCollision(t *testing.T) {
 	// Only "Notizen" from the active account should ever reach here.
 	tops, children := buildFolderTree([]string{"Notizen", "Projects/Git"})
@@ -132,5 +135,61 @@ func TestBuildFolderTree_ScopedInputAvoidsCollision(t *testing.T) {
 	}
 	if got := children["Projects"]; len(got) != 1 || got[0] != "Projects/Git" {
 		t.Errorf("children[Projects] = %v, want [Projects/Git]", got)
+	}
+}
+
+// The real-world case buildAccountAwareFolderTree exists for: two Apple
+// Notes accounts each with their own "Notizen", one with content, one
+// currently empty (only known via the folders table — see FolderInfo's doc
+// comment). It must split into two separate tabs instead of merging them,
+// non-empty account first.
+func TestBuildAccountAwareFolderTree_SplitsCollidingTopLevelFolder(t *testing.T) {
+	folders := []string{"Notizen", "Projects/Git"}
+	counts := map[string]int{"Notizen": 5, "Projects": 2, "Projects/Git": 2}
+	perAccount := map[string][]store.FolderInfo{
+		"FH Burgenland": {{Account: "FH Burgenland", Folder: "Notizen", Count: 5}},
+		"Die Brücke":    {{Account: "Die Brücke", Folder: "Notizen", Count: 0}},
+	}
+
+	tops, topAccounts, children := buildAccountAwareFolderTree(folders, counts, perAccount, false)
+
+	if len(tops) != 3 {
+		t.Fatalf("tops = %v, want 3 entries (Notizen x2 + Projects)", tops)
+	}
+	if tops[0] != "Notizen" || topAccounts[0] != "FH Burgenland" {
+		t.Errorf("tops[0] = (%q, %q), want (Notizen, FH Burgenland) — non-empty account should sort first", tops[0], topAccounts[0])
+	}
+	if tops[1] != "Notizen" || topAccounts[1] != "Die Brücke" {
+		t.Errorf("tops[1] = (%q, %q), want (Notizen, Die Brücke)", tops[1], topAccounts[1])
+	}
+	if tops[2] != "Projects" || topAccounts[2] != "" {
+		t.Errorf("tops[2] = (%q, %q), want (Projects, \"\") — non-colliding folder stays account-agnostic", tops[2], topAccounts[2])
+	}
+	if got := children["Projects"]; len(got) != 1 || got[0] != "Projects/Git" {
+		t.Errorf("children[Projects] = %v, want [Projects/Git] — untouched by the account split", got)
+	}
+	if got := counts["Notizen\x00FH Burgenland"]; got != 5 {
+		t.Errorf("counts[Notizen\\x00FH Burgenland] = %d, want 5 (written by the split so topFolderKey can look it up)", got)
+	}
+	if got := counts["Notizen\x00Die Brücke"]; got != 0 {
+		t.Errorf("counts[Notizen\\x00Die Brücke] = %d, want 0", got)
+	}
+}
+
+// hideEmpty must drop an empty collision-split tab (the Brücke side, still
+// at zero notes) while keeping its non-empty sibling — this is the state
+// "H" toggles into and a note being written toggles back out of.
+func TestBuildAccountAwareFolderTree_HideEmptyDropsEmptySplitTab(t *testing.T) {
+	folders := []string{"Notizen"}
+	counts := map[string]int{"Notizen": 5}
+	perAccount := map[string][]store.FolderInfo{
+		"FH Burgenland": {{Account: "FH Burgenland", Folder: "Notizen", Count: 5}},
+		"Die Brücke":    {{Account: "Die Brücke", Folder: "Notizen", Count: 0}},
+	}
+
+	tops, topAccounts, _ := buildAccountAwareFolderTree(folders, counts, perAccount, true)
+
+	if len(tops) != 1 || tops[0] != "Notizen" || topAccounts[0] != "FH Burgenland" {
+		t.Errorf("tops/topAccounts = %v/%v, want exactly [Notizen]/[FH Burgenland] with the empty Brücke tab hidden", tops, topAccounts)
 	}
 }

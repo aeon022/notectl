@@ -193,6 +193,7 @@ notectl mcp
 | `d` | Delete note (confirm with `y`) |
 | `o` | Open in `$EDITOR` |
 | `s` | Sync vault |
+| `H` | Toggle hiding empty notebooks |
 | `/` | Search title + body |
 | `tab` / `shift+tab` | Switch folder tab |
 | `PgDn` / `PgUp` | Page down / up |

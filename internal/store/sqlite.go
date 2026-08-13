@@ -101,6 +101,12 @@ func (s *Store) Close() error {
 	return err
 }
 
+// migrate creates/upgrades the schema. `folders` is separate from `notes`
+// deliberately: a folder only ever gets a row in `notes` by way of a note
+// sitting inside it, so a real, currently-empty Apple Notes folder (e.g. a
+// second account's own never-used "Notizen") has nowhere to be recorded at
+// all otherwise — see ReplaceFolders/ListFolderInfo below and
+// notes.ListAppleAccountFolders, which is what actually discovers them.
 func (s *Store) migrate() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS notes (
@@ -119,6 +125,13 @@ func (s *Store) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_notes_source  ON notes(source);
 		CREATE INDEX IF NOT EXISTS idx_notes_folder  ON notes(folder);
 		CREATE INDEX IF NOT EXISTS idx_notes_modtime ON notes(mod_time);
+
+		CREATE TABLE IF NOT EXISTS folders (
+			source  TEXT NOT NULL,
+			account TEXT NOT NULL DEFAULT '',
+			folder  TEXT NOT NULL,
+			PRIMARY KEY (source, account, folder)
+		);
 	`)
 	if err != nil {
 		return err
@@ -376,14 +389,52 @@ func (s *Store) CountByAccount(ctx context.Context) (map[string]int, error) {
 	return counts, rows.Err()
 }
 
-// ListFoldersByAccount is like ListFolders but scoped to one account —
-// used to build the notebook tab tree (row 1/2) for whichever account tab
-// is currently active, so two accounts' identically-named folders don't
-// get deduplicated into one tab (see ListApple's doc comment).
-func (s *Store) ListFoldersByAccount(ctx context.Context, account string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT folder FROM notes WHERE folder != '' AND account = ? ORDER BY folder`,
-		account)
+
+// ReplaceFolders replaces every folders-table row for source with
+// byAccount (account -> that account's own folder paths, as returned by
+// e.g. notes.ListAppleAccountFolders) — delete-then-reinsert per sync, same
+// convention DeleteBySource+Upsert already use for notes, so a folder
+// removed since the last sync (deleted in Notes.app) doesn't linger as a
+// phantom empty tab forever.
+func (s *Store) ReplaceFolders(ctx context.Context, source string, byAccount map[string][]string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM folders WHERE source=?`, source); err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO folders (source, account, folder) VALUES (?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for account, folders := range byAccount {
+		for _, f := range folders {
+			if f == "" {
+				continue
+			}
+			if _, err := stmt.ExecContext(ctx, source, account, f); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// knownFolders returns every folder path in the folders table, optionally
+// scoped to one account (empty = unscoped, every account+source). This is
+// the "exists but maybe has nothing in it" half of FolderInfo's union — see
+// folderInfo below.
+func (s *Store) knownFolders(ctx context.Context, account string) ([]string, error) {
+	q := `SELECT DISTINCT folder FROM folders WHERE folder != ''`
+	var args []any
+	if account != "" {
+		q += ` AND account = ?`
+		args = append(args, account)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -399,22 +450,65 @@ func (s *Store) ListFoldersByAccount(ctx context.Context, account string) ([]str
 	return folders, rows.Err()
 }
 
-func (s *Store) ListFolders(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT folder FROM notes WHERE folder != '' ORDER BY folder`)
+// FolderInfo describes one (account, folder) pair known to notectl, with
+// Count being its self+descendants note rollup (same convention
+// CountByFolder uses). Count == 0 means the folder is real — synced from a
+// live Apple Notes folder listing — but currently has nothing in it, which
+// used to have no representation anywhere in the cache at all (see
+// migrate's doc comment on the folders table).
+type FolderInfo struct {
+	Account string
+	Folder  string
+	Count   int
+}
+
+// folderInfo is the shared implementation behind ListFolderInfo (account
+// == "", unscoped across everyone) and ListFolderInfoByAccount (scoped) —
+// the note-derived, count-bearing folders (via CountByFolder's own
+// self+descendants rollup) unioned with the folders table's possibly-empty
+// ones, zero-filling any folder that only exists in the latter.
+func (s *Store) folderInfo(ctx context.Context, account string) ([]FolderInfo, error) {
+	counts, err := s.CountByFolder(ctx, account)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var folders []string
-	for rows.Next() {
-		var f string
-		if err := rows.Scan(&f); err != nil {
-			return nil, err
-		}
-		folders = append(folders, f)
+	known, err := s.knownFolders(ctx, account)
+	if err != nil {
+		return nil, err
 	}
-	return folders, rows.Err()
+	seen := map[string]bool{}
+	var out []FolderInfo
+	for f, c := range counts {
+		if f == "" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, FolderInfo{Account: account, Folder: f, Count: c})
+	}
+	for _, f := range known {
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, FolderInfo{Account: account, Folder: f, Count: 0})
+	}
+	return out, nil
+}
+
+// ListFolderInfo is the "All accounts" row's data source: every folder
+// known across every account+source, unscoped, each with its own note
+// count (0 for a real-but-empty one).
+func (s *Store) ListFolderInfo(ctx context.Context) ([]FolderInfo, error) {
+	return s.folderInfo(ctx, "")
+}
+
+// ListFolderInfoByAccount is ListFolderInfo scoped to one account — used to
+// detect a same-named top-level folder that collides across more than one
+// Apple Notes account (see buildAccountAwareFolderTree in the tui package),
+// which the unscoped ListFolderInfo can't tell apart on its own, for the
+// same reason CountByFolder needs its own account-scoped parameter.
+func (s *Store) ListFolderInfoByAccount(ctx context.Context, account string) ([]FolderInfo, error) {
+	return s.folderInfo(ctx, account)
 }
 
 func scan(rows *sql.Rows) ([]models.Note, error) {

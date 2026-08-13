@@ -324,6 +324,56 @@ end tell
 	return folders, nil
 }
 
+// ListAppleAccountFolders returns every folder in every Apple Notes
+// account, scoped per account with full nested paths resolved the same way
+// ListApple resolves them for notes — including folders that currently have
+// zero notes in them. ListApple (and thus the notes cache/TUI folder tree
+// built from it) only ever learns a folder exists by seeing a note inside
+// it, so an account's own copy of a same-named notebook that's never been
+// written to (e.g. a second Exchange account's "Notizen", still empty) was
+// otherwise invisible everywhere in notectl. This is the source for
+// SyncFolders's separate `folders` cache table, which exists specifically
+// to keep that knowledge around.
+func ListAppleAccountFolders() (map[string][]string, error) {
+	script := `
+tell application "Notes"
+	set output to ""
+	repeat with a in every account
+		set aName to name of a
+		repeat with f in folders of a
+			set fName to name of f
+			if fName is not "Recently Deleted" and fName is not "Zuletzt gelöscht" then
+				set output to output & aName & tab & fName & linefeed
+			end if
+		end repeat
+	end repeat
+	return output
+end tell
+`
+	out, err := runAppleScript(script)
+	if err != nil {
+		return nil, err
+	}
+	parents, perr := appleFolderParents()
+	if perr != nil {
+		parents = map[string]string{}
+	}
+	result := map[string][]string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 2)
+		if len(fields) != 2 {
+			continue
+		}
+		account, leaf := fields[0], fields[1]
+		result[account] = append(result[account], appleFolderPath(leaf, parents))
+	}
+	return result, nil
+}
+
 // OpenApple brings the note up in the Apple Notes app.
 func OpenApple(id string) error {
 	script := fmt.Sprintf(`

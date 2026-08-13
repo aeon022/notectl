@@ -467,6 +467,9 @@ func handleSync(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, 
 		for i := range ns {
 			_ = s.Upsert(ctx, &ns[i])
 		}
+		if byAccount, ferr := syncdispatch.SyncFolders(src); ferr == nil && byAccount != nil {
+			_ = s.ReplaceFolders(ctx, srcKey, byAccount)
+		}
 		results = append(results, fmt.Sprintf("%s: %d notes", srcKey, len(ns)))
 	}
 

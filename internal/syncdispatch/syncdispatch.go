@@ -49,6 +49,21 @@ func List(src config.SourceType, p Params) ([]models.Note, error) {
 	}
 }
 
+// SyncFolders returns src's full per-account folder listing — including
+// folders with zero notes in them — for callers to feed into
+// store.ReplaceFolders alongside their regular List/Upsert sync. nil, nil
+// for any source other than Apple: Obsidian/Joplin folders always get
+// discovered through List's own notes (a note's folder is a plain vault
+// subdirectory, not an account-scoped, possibly-empty, possibly-name-
+// colliding notebook the way Apple Notes folders are), so there's nothing
+// this needs to add for them.
+func SyncFolders(src config.SourceType) (map[string][]string, error) {
+	if src != config.SourceApple {
+		return nil, nil
+	}
+	return notes.ListAppleAccountFolders()
+}
+
 // ParamsFromConfig builds Params from the current config — the common case
 // for every caller (TUI, CLI, MCP) since they all read the same settings.
 func ParamsFromConfig() Params {

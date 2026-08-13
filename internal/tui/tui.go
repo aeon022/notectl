@@ -133,6 +133,10 @@ type notesLoadedMsg struct {
 	folderCounts  map[string]int
 	accounts      []string
 	accountCounts map[string]int
+	// folderInfoByAccount is only populated in "All accounts" mode — see
+	// loadNotesCmd — and feeds buildAccountAwareFolderTree's collision
+	// detection.
+	folderInfoByAccount map[string][]store.FolderInfo
 }
 type noteRestoredMsg struct {
 	note *models.Note
@@ -189,6 +193,30 @@ type Model struct {
 	subFolders map[string][]string // top-level name -> its children's full paths, row 2
 	tabCursor  int                 // index into tabPositions()
 	tabScroll  int                 // first visible row-1 tab, kept in view by ensureTabVisible
+
+	// topFolderAccounts is topFolders' parallel slice: "" for an ordinary
+	// tab (scoped by whichever account the "["/"]" indicator has active),
+	// or a specific account name when this tab is one half of a same-named
+	// notebook collision (e.g. two Exchange accounts each with their own
+	// "Notizen") — see buildAccountAwareFolderTree's doc comment. A bound
+	// tab's own account overrides the global account filter for it
+	// (effectiveAccount), which is what makes selecting it unambiguous
+	// instead of merging both accounts' notes the way a single flat
+	// "Notizen" tab used to.
+	topFolderAccounts []string
+
+	// hideEmptyNotebooks, toggled by a key (see keymap), drops any notebook
+	// tab with zero notes in it from row 1/2 — mainly relevant now that
+	// ListFolderInfo surfaces real-but-empty Apple Notes folders that used
+	// to be entirely invisible (see migrate's doc comment on the folders
+	// table): without this, every account's untouched default folders
+	// would clutter the tab row. Persisted across restarts (see
+	// persistedState) and cleared automatically the moment a note gets
+	// written into any notebook — see the writeCmd success path — since a
+	// notebook that just received a note is exactly the one case where
+	// staying hidden would be actively confusing (you'd write a note and
+	// then not be able to find its notebook).
+	hideEmptyNotebooks bool
 
 	// Account indicator (header, not a tab row) — Apple Notes only, e.g.
 	// "iCloud", "FH Burgenland". Only shown when len(accounts) > 1: a
@@ -289,6 +317,7 @@ var paletteCommands = []palette.Command{
 	{Name: "copy", Desc: "Copy title to clipboard", Key: "y"},
 	{Name: "undo", Desc: "Undo last delete", Key: "u"},
 	{Name: "sort", Desc: "Toggle sort (date / title A–Z)", Key: "S"},
+	{Name: "hideempty", Desc: "Toggle hiding empty notebooks", Key: "H"},
 	{Name: "settings", Desc: "Settings (vault path, source)", Key: "p"},
 	{Name: "sync", Desc: "Sync", Key: "s"},
 	{Name: "search", Desc: "Search notes", Key: "/"},
@@ -358,20 +387,25 @@ func New(openPath string) Model {
 		lastClickRow:         -1,
 		openPath:             openPath,
 		pendingFolderRestore: state.LastFolder,
+		hideEmptyNotebooks:   state.HideEmptyNotebooks,
 	}
 }
 
 // persistedState is what New() restores from and saveUIState saves to — see
 // missionctl-core/uistate. Deliberately has no LastAccount: the active
 // account always starts fresh at "All accounts" on launch, see
-// pendingFolderRestore's doc comment.
+// pendingFolderRestore's doc comment. HideEmptyNotebooks IS persisted,
+// unlike that — it's a display preference ("I don't want clutter"), not
+// browsing position, so there's no equivalent reason to reset it on launch.
 type persistedState struct {
-	LastFolder string `json:"last_folder"`
+	LastFolder         string `json:"last_folder"`
+	HideEmptyNotebooks bool   `json:"hide_empty_notebooks"`
 }
 
 func (m Model) saveUIState() {
 	_ = uistate.Save(config.UIStatePath(), persistedState{
-		LastFolder: m.activeFolder(),
+		LastFolder:         m.activeFolder(),
+		HideEmptyNotebooks: m.hideEmptyNotebooks,
 	})
 }
 
@@ -472,9 +506,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.allNotes = msg.notes
 		m.notes = filterNotes(m.allNotes, m.searchQ)
 		m.folders = msg.folders
-		m.topFolders, m.subFolders = buildFolderTree(msg.folders)
 		if msg.folderCounts != nil {
 			m.folderCounts = msg.folderCounts
+		}
+		if msg.folderInfoByAccount != nil {
+			m.topFolders, m.topFolderAccounts, m.subFolders =
+				buildAccountAwareFolderTree(msg.folders, msg.folderCounts, msg.folderInfoByAccount, m.hideEmptyNotebooks)
+		} else {
+			tops, kids := buildFolderTree(filterEmptyFolders(msg.folders, msg.folderCounts, m.hideEmptyNotebooks))
+			m.topFolders = tops
+			m.topFolderAccounts = make([]string, len(tops))
+			m.subFolders = kids
 		}
 		m.accounts = msg.accounts
 		if msg.accountCounts != nil {
@@ -486,7 +528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cursor, ok := m.resolveTabCursor(restore); ok {
 				m.tabCursor = cursor
 				m.ensureTabVisible()
-				return m, loadNotesCmd(m.activeAccount(), restore)
+				return m, loadNotesCmd(m.effectiveAccount(), restore)
 			}
 		}
 		// Try to restore cursor to the same note by ID.
@@ -533,7 +575,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus(fmt.Sprintf("Synced %d notes", msg.count))
 			m.lastSynced = time.Now()
 			_ = lastsync.Save(config.LastSyncedPath(), m.lastSynced)
-			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 		}
 
 	case writeDoneMsg:
@@ -546,7 +588,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.setStatus("Saved: " + name)
 			m.view = viewList
-			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+			// A note just landed somewhere — if "hide empty notebooks" was
+			// on, that notebook (or one just like it) is exactly the case
+			// where staying hidden would be actively confusing: you'd write
+			// a note and then not be able to find the notebook it went
+			// into. Clearing it here rather than leaving it on and just
+			// revealing the one affected notebook matches what was asked
+			// for — the whole filter turns itself off, not just a
+			// carve-out for this one note.
+			if m.hideEmptyNotebooks {
+				m.hideEmptyNotebooks = false
+				m.saveUIState()
+			}
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 		}
 
 	case noteRestoredMsg:
@@ -558,7 +612,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				name = msg.note.Title
 			}
 			m.setStatus("Restored: " + name)
-			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 		}
 
 	case deletedMsg:
@@ -572,7 +626,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatus("Settings saved")
 			m.view = viewList
-			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 		}
 
 	case appleBodyMsg:
@@ -681,7 +735,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.ensureTabVisible()
 					m.cursor = 0
 					m.saveUIState()
-					return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+					return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 				}
 				return m, nil
 			}
@@ -882,7 +936,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
-		return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 	case "shift+tab":
 		if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor - 1 + n) % n
@@ -890,7 +944,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
-		return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 	case "[", "]":
 		// Cycle the active account directly — immediate, visible effect
 		// (header indicator changes, row 1 reloads scoped to it), not a
@@ -908,7 +962,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ensureTabVisible()
 			m.cursor = 0
 			m.saveUIState()
-			return m, loadNotesCmd(m.activeAccount(), m.activeFolder())
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 		}
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		// jump to the nth visible (on-screen) note, date-group headers not
@@ -1035,6 +1089,23 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setStatus("Sort: title A–Z")
 		}
+	case "H":
+		// A full reload (rather than filtering m.topFolders in place) since
+		// the hidden/shown set depends on data (folderCounts,
+		// folderInfoByAccount) already loaded — cheapest correct way to
+		// re-derive the tree is the same path a sync or tab switch already
+		// takes. saveUIState persists the new value immediately (not just
+		// on quit) — see hideEmptyNotebooks' doc comment on why it's
+		// persisted at all — so a crash right after toggling it doesn't
+		// silently lose the change.
+		m.hideEmptyNotebooks = !m.hideEmptyNotebooks
+		m.saveUIState()
+		if m.hideEmptyNotebooks {
+			m.setStatus("Hiding empty notebooks")
+		} else {
+			m.setStatus("Showing empty notebooks")
+		}
+		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder())
 	case "y":
 		if len(m.notes) > 0 {
 			m.setStatus("Copied: " + runeLimit(m.notes[m.cursor].Title, 30))
@@ -1752,6 +1823,7 @@ func (m Model) helpContent() string {
 		Row("y", "copy title to clipboard").
 		Section("Other").
 		Row("S", "toggle sort (date / title A–Z)").
+		Row("H", "toggle hiding empty notebooks").
 		Row("p", "settings (vault path, source)").
 		Row("s", "sync").
 		Row("/", "search (esc clears)").
@@ -2180,7 +2252,7 @@ func (m Model) renderHelpBar(w int) string {
 		}
 		return styleOK.Render("✓ " + m.status)
 	}
-	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  u:undo  y:copy  S:sort")
+	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  u:undo  y:copy  S:sort  H:hide empty")
 	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:notebook  ?:help  q:quit")
 	pad := w - lipgloss.Width(line2) - lipgloss.Width(right)
 	if pad < 0 {
@@ -2774,20 +2846,59 @@ func loadNotesCmd(account, folder string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		var folders []string
+
+		var infos []store.FolderInfo
 		if account != "" {
-			folders, _ = s.ListFoldersByAccount(ctx, account)
+			infos, _ = s.ListFolderInfoByAccount(ctx, account)
 		} else {
-			folders, _ = s.ListFolders(ctx)
+			infos, _ = s.ListFolderInfo(ctx)
 		}
-		counts, _ := s.CountByFolder(ctx, account)
+		folders, counts := splitFolderInfo(infos)
+		// ListFolderInfo/ByAccount deliberately never returns a Folder=""
+		// row (it's not a real notebook), but the "All" tab's own count
+		// still needs the grand total under that key — CountByFolder
+		// already computes it internally, just cheap enough to ask for
+		// again here rather than changing FolderInfo's shape for one int.
+		if plain, perr := s.CountByFolder(ctx, account); perr == nil {
+			counts[""] = plain[""]
+		}
+
 		accounts, _ := s.ListAccounts(ctx)
 		accountCounts, _ := s.CountByAccount(ctx)
+
+		// Per-account folder breakdown — only needed in "All accounts" mode
+		// to detect a same-named top-level notebook colliding across more
+		// than one account (see buildAccountAwareFolderTree). A specific
+		// account is already unambiguous on its own, so skip the extra
+		// queries there.
+		var byAccount map[string][]store.FolderInfo
+		if account == "" && len(accounts) > 1 {
+			byAccount = map[string][]store.FolderInfo{}
+			for _, a := range accounts {
+				ai, _ := s.ListFolderInfoByAccount(ctx, a)
+				byAccount[a] = ai
+			}
+		}
+
 		return notesLoadedMsg{
 			notes: ns, folders: folders, folderCounts: counts,
 			accounts: accounts, accountCounts: accountCounts,
+			folderInfoByAccount: byAccount,
 		}
 	}
+}
+
+// splitFolderInfo separates a FolderInfo slice (as returned by
+// store.ListFolderInfo/ListFolderInfoByAccount) into the flat folder-path
+// list and per-path count map the rest of the tab-building code expects.
+func splitFolderInfo(infos []store.FolderInfo) ([]string, map[string]int) {
+	folders := make([]string, 0, len(infos))
+	counts := make(map[string]int, len(infos))
+	for _, fi := range infos {
+		folders = append(folders, fi.Folder)
+		counts[fi.Folder] = fi.Count
+	}
+	return folders, counts
 }
 
 // filterNotes fuzzy-matches q against each note's title (github.com/
@@ -2908,6 +3019,9 @@ func doSyncCmd() tea.Cmd {
 			_ = s.DeleteBySource(ctx, syncdispatch.SourceKey(src))
 			for i := range ns {
 				_ = s.Upsert(ctx, &ns[i])
+			}
+			if byAccount, ferr := syncdispatch.SyncFolders(src); ferr == nil && byAccount != nil {
+				_ = s.ReplaceFolders(ctx, syncdispatch.SourceKey(src), byAccount)
 			}
 			total += len(ns)
 		}

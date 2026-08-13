@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/aeon022/missionctl-core/humanize"
+	"github.com/aeon022/notectl/internal/store"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -65,6 +66,119 @@ func buildFolderTree(folders []string) (tops []string, children map[string][]str
 		sort.Strings(children[k])
 	}
 	return tops, children
+}
+
+// filterEmptyFolders drops any folder path with a zero count in counts,
+// when hideEmpty is set — used for the single-account tab tree (a specific
+// account is already unambiguous, so it never needs the collision-splitting
+// buildAccountAwareFolderTree does, but still respects the same
+// hideEmptyNotebooks preference).
+func filterEmptyFolders(folders []string, counts map[string]int, hideEmpty bool) []string {
+	if !hideEmpty {
+		return folders
+	}
+	out := make([]string, 0, len(folders))
+	for _, f := range folders {
+		if counts[f] > 0 {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// buildAccountAwareFolderTree is buildFolderTree's "All accounts" sibling:
+// same top-level/children split from a flat folder list, but additionally
+// splits a top-level notebook into one tab per account whenever its name
+// collides across more than one Apple Notes account — e.g. two Exchange
+// accounts each with their own "Notizen" — instead of merging them into one
+// tab that silently mixed both accounts' notes together (the exact
+// confusion notebookAccountIndicator was built to at least flag; this
+// removes the ambiguity at the source instead). A non-colliding folder
+// keeps the old, account-agnostic single tab (topAccounts entry "") —
+// scoped by whatever the global "["/"]" account filter is, unchanged.
+//
+// Within a collision, accounts are ordered by their own note count in that
+// notebook descending — the account that actually has content leads, an
+// empty sibling account's copy trails — then by account name as a stable
+// tie-break.
+//
+// folders/counts are the ordinary unscoped ("All accounts") data
+// buildFolderTree itself would use; counts is written into (not just read)
+// as this runs — a colliding tab's own per-account count gets added under
+// its composite topFolderKey (folder+"\x00"+account) so topLabels can look
+// it up the same way it looks up an ordinary tab's count, since the plain
+// folder-name key can't hold two different numbers for the same name.
+// perAccount is one FolderInfo slice per Apple Notes account
+// (store.ListFolderInfoByAccount's shape), used only to detect which
+// top-level names actually collide and each account's own count for them.
+// hideEmpty drops any resulting top-level tab (colliding or not) whose
+// count is 0.
+//
+// Sub-notebooks (row 2) are deliberately NOT split per account even under a
+// colliding top — a real edge case (two accounts each nesting their own
+// same-named subfolder under their own same-named top) that isn't the
+// problem this exists to solve; children stay keyed by the plain top name,
+// shared across whichever accounts that top spans.
+func buildAccountAwareFolderTree(folders []string, counts map[string]int, perAccount map[string][]store.FolderInfo, hideEmpty bool) (tops []string, topAccounts []string, children map[string][]string) {
+	// topAccountCounts[topName][account] = that account's own rolled-up
+	// count for topName — only ever has more than one entry for a name
+	// that's a real collision.
+	topAccountCounts := map[string]map[string]int{}
+	for account, infos := range perAccount {
+		for _, info := range infos {
+			top := info.Folder
+			if i := strings.IndexByte(top, '/'); i >= 0 {
+				top = top[:i]
+			}
+			if info.Folder != top {
+				continue // only the top-level entry itself, not a nested child
+			}
+			if topAccountCounts[top] == nil {
+				topAccountCounts[top] = map[string]int{}
+			}
+			topAccountCounts[top][account] = info.Count
+		}
+	}
+
+	plainTops, plainChildren := buildFolderTree(folders)
+	children = plainChildren
+
+	for _, top := range plainTops {
+		byAccount := topAccountCounts[top]
+		if len(byAccount) < 2 {
+			if hideEmpty && counts[top] == 0 {
+				continue
+			}
+			tops = append(tops, top)
+			topAccounts = append(topAccounts, "")
+			continue
+		}
+		type acctCount struct {
+			account string
+			count   int
+		}
+		entries := make([]acctCount, 0, len(byAccount))
+		for account, c := range byAccount {
+			entries = append(entries, acctCount{account, c})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].count != entries[j].count {
+				return entries[i].count > entries[j].count
+			}
+			return entries[i].account < entries[j].account
+		})
+		for _, e := range entries {
+			if hideEmpty && e.count == 0 {
+				continue
+			}
+			if counts != nil {
+				counts[top+"\x00"+e.account] = e.count
+			}
+			tops = append(tops, top)
+			topAccounts = append(topAccounts, e.account)
+		}
+	}
+	return tops, topAccounts, children
 }
 
 // tabPos is one stop in the flattened tab/shift+tab sequence: top is 0 for
@@ -166,6 +280,28 @@ func (m Model) activeAccount() string {
 		return ""
 	}
 	return m.accounts[c-1]
+}
+
+// activeFolderAccount returns the account the current top-level tab is
+// bound to (see topFolderAccounts' doc comment on the Model field) — "" for
+// an ordinary, account-agnostic tab, "All", or an out-of-range position.
+func (m Model) activeFolderAccount() string {
+	pos := m.currentPos()
+	if pos.top == 0 || pos.top > len(m.topFolderAccounts) {
+		return ""
+	}
+	return m.topFolderAccounts[pos.top-1]
+}
+
+// effectiveAccount is what loadNotesCmd should actually filter by: the
+// current tab's own bound account if it has one (a collision-split tab —
+// see topFolderAccounts), overriding the global "["/"]" account filter for
+// exactly that tab; otherwise activeAccount() as before.
+func (m Model) effectiveAccount() string {
+	if a := m.activeFolderAccount(); a != "" {
+		return a
+	}
+	return m.activeAccount()
 }
 
 // resolveAccountCursor finds where a persisted account name sits in the
@@ -293,11 +429,41 @@ func tabLabel(display string, count int) string {
 	return display
 }
 
+// topFolderKey returns the key used to look up tab i's own note count in
+// m.folderCounts — the plain folder path for an ordinary tab, or a
+// folder+account composite for one half of a same-named collision (see
+// buildAccountAwareFolderTree) so two colliding tabs sharing the same
+// folder name don't also collide on their count lookup. Never rendered
+// directly; topFolderLabel below is what's actually shown.
+func (m Model) topFolderKey(i int) string {
+	top := m.topFolders[i]
+	if i < len(m.topFolderAccounts) && m.topFolderAccounts[i] != "" {
+		return top + "\x00" + m.topFolderAccounts[i]
+	}
+	return top
+}
+
+// topFolderLabel is what tab i actually displays: the plain folder name,
+// or "<folder> (<account>)" when this tab is bound to one specific account
+// — account names are truncated to keep a same-named collision from
+// dominating the whole tab row (a 36-char Exchange UPN otherwise would).
+func (m Model) topFolderLabel(i int) string {
+	top := m.topFolders[i]
+	if i >= len(m.topFolderAccounts) || m.topFolderAccounts[i] == "" {
+		return top
+	}
+	return fmt.Sprintf("%s (%s)", top, runewidth.Truncate(m.topFolderAccounts[i], 16, "…"))
+}
+
 func (m Model) topLabels() []string {
 	labels := make([]string, 0, len(m.topFolders)+1)
 	labels = append(labels, tabLabel("All", m.folderCounts[""]))
-	for _, t := range m.topFolders {
-		labels = append(labels, tabLabel(t, m.folderCounts[t]))
+	for i := range m.topFolders {
+		count := m.folderCounts[m.topFolders[i]]
+		if i < len(m.topFolderAccounts) && m.topFolderAccounts[i] != "" {
+			count = m.folderCounts[m.topFolderKey(i)]
+		}
+		labels = append(labels, tabLabel(m.topFolderLabel(i), count))
 	}
 	return labels
 }
@@ -419,7 +585,7 @@ func (m Model) renderTabRow2(w int) string {
 	}
 	pos := m.currentPos()
 	top := m.topFolders[pos.top-1]
-	prefix := subTabPrefix(top)
+	prefix := subTabPrefix(m.topFolderLabel(pos.top - 1))
 	labels := m.subLabels(top)
 	var parts []string
 	total := lipgloss.Width(prefix)

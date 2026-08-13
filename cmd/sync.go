@@ -35,6 +35,9 @@ var syncCmd = &cobra.Command{
 			for i := range ns {
 				_ = s.Upsert(ctx, &ns[i])
 			}
+			if byAccount, ferr := syncdispatch.SyncFolders(src); ferr == nil && byAccount != nil {
+				_ = s.ReplaceFolders(ctx, syncdispatch.SourceKey(src), byAccount)
+			}
 			fmt.Printf("\n  %d notes indexed\n", len(ns))
 		}
 		return lastErr
