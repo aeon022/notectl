@@ -389,7 +389,6 @@ func (s *Store) CountByAccount(ctx context.Context) (map[string]int, error) {
 	return counts, rows.Err()
 }
 
-
 // ReplaceFolders replaces every folders-table row for source with
 // byAccount (account -> that account's own folder paths, as returned by
 // e.g. notes.ListAppleAccountFolders) — delete-then-reinsert per sync, same

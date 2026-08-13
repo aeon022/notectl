@@ -421,7 +421,6 @@ func TestFormatNoteRow_LongFolderNeverOverflowsWidth(t *testing.T) {
 	}
 }
 
-
 func TestHighlightMatches_ColorsOnlyMatchedRunes(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 	defer lipgloss.SetColorProfile(termenv.Ascii)

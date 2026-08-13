@@ -263,3 +263,48 @@ func TestSetExpanded_CollisionSplitTabsExpandIndependently(t *testing.T) {
 		t.Error("isExpanded(1) = true — expanding tab 0 (FH Burgenland) should not expand tab 1 (Die Brücke)")
 	}
 }
+
+// Regression test for a real, live-reproduced bug: an uncapped tab-name
+// width let one long notebook name ("Change-Management", 17 columns) force
+// tabWindow to evict two tabs for a single one-step tab/shift+tab move —
+// press it once, watch two previously-visible tabs disappear together, not
+// just the one that had to make room. topFolderNameWidth capping every
+// name fixes this for realistic terminal widths (a genuinely tiny terminal,
+// ~35 columns or less, can still only fit one tab at a time regardless —
+// that's an accepted, unavoidable edge case, not what this pins).
+func TestTabWindow_SingleStepNeverEvictsMoreThanOneTab(t *testing.T) {
+	m := Model{
+		topFolders:        []string{"Baby", "Change-Management", "Notes", "Notizen", "Notizen", "Projects"},
+		topFolderAccounts: []string{"", "", "", "Die Brücke || Gerwin", "2330069032@hochschule-burgenland.at", ""},
+		subFolders: map[string][]string{
+			"Change-Management": {"Change-Management/KI"},
+			"Projects":          {"Projects/Git", "Projects/MISSIONCTL", "Projects/QuantumPod", "Projects/Syncthing"},
+		},
+		folderCounts: map[string]int{
+			"":                                45,
+			"Baby":                            3,
+			"Change-Management":               9,
+			"Notes":                           23,
+			"Notizen\x00Die Brücke || Gerwin": 2,
+			"Notizen\x002330069032@hochschule-burgenland.at": 1,
+			"Projects": 1,
+		},
+	}
+	for _, width := range []int{50, 60, 70, 80, 100, 120} {
+		m.width = width
+		m.tabCursor = 0
+		m.tabScroll = 0
+		n := len(m.tabPositions())
+		for step := 0; step < n; step++ {
+			labels := m.topLabels()
+			pos := m.currentPos()
+			before := m.tabScroll
+			start, _ := tabWindow(labels, pos.top, before, m.width-1)
+			if delta := start - before; delta > 1 {
+				t.Errorf("width=%d step=%d: scroll jumped from %d to %d (delta %d) on a single tab-step, evicting more than one tab at once", width, step, before, start, delta)
+			}
+			m.tabScroll = start
+			m.tabCursor = (m.tabCursor + 1) % n
+		}
+	}
+}

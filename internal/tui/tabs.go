@@ -435,17 +435,31 @@ func (m *Model) setExpanded(i int, expanded bool) {
 	}
 }
 
-// topFolderLabel is what tab i actually displays: the plain folder name,
-// prefixed with a disclosure marker when it has children — "▸" collapsed,
-// "▾" expanded — so a parent notebook's own existence is visible on row 1
-// without having to select it first (previously the only way to discover a
-// notebook had children at all was to tab onto it and watch row 2 pop up).
-// The tab's bound account, if any (see topFolderAccounts), is deliberately
-// NOT in this label — that lives on renderAccountLine instead, so a
-// same-named collision's two tabs still read as plain, short notebook
-// names rather than one of them carrying a 36-char Exchange address.
+// topFolderNameWidth caps a single top-level tab's own folder-name text —
+// separately from the count/marker tabLabel adds — so one long notebook
+// name can't dominate row 1's width budget on its own. Uncapped, a name
+// like "Change-Management" (27 rendered columns) could force tabWindow to
+// evict two or more tabs at once for a single tab/shift+tab step — you'd
+// press it once and watch several previously-visible tabs vanish
+// together, not just the one that had to make room (confirmed live: a
+// single "tab" press past "Change-Management" dropped both it and "Baby"
+// in the same step). Capping every name to the same modest width bounds
+// how much any one tab can cost, so a single step forward only ever has to
+// evict close to one tab's worth of space, not several.
+const topFolderNameWidth = 14
+
+// topFolderLabel is what tab i actually displays: the folder name (capped
+// to topFolderNameWidth), prefixed with a disclosure marker when it has
+// children — "▸" collapsed, "▾" expanded — so a parent notebook's own
+// existence is visible on row 1 without having to select it first
+// (previously the only way to discover a notebook had children at all was
+// to tab onto it and watch row 2 pop up). The tab's bound account, if any
+// (see topFolderAccounts), is deliberately NOT in this label — that lives
+// on renderAccountLine instead, so a same-named collision's two tabs still
+// read as plain, short notebook names rather than one of them carrying a
+// 36-char Exchange address.
 func (m Model) topFolderLabel(i int) string {
-	top := m.topFolders[i]
+	top := runewidth.Truncate(m.topFolders[i], topFolderNameWidth, "…")
 	if !m.hasChildren(i) {
 		return top
 	}
