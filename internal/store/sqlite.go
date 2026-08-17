@@ -132,6 +132,24 @@ func (s *Store) migrate() error {
 			folder  TEXT NOT NULL,
 			PRIMARY KEY (source, account, folder)
 		);
+
+		CREATE TABLE IF NOT EXISTS mirror_links (
+			apple_id      TEXT PRIMARY KEY,
+			apple_hash    TEXT NOT NULL,
+			obsidian_id   TEXT NOT NULL UNIQUE,
+			obsidian_hash TEXT NOT NULL,
+			last_synced   TEXT NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS mirror_pending_deletes (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			apple_id    TEXT NOT NULL DEFAULT '',
+			obsidian_id TEXT NOT NULL DEFAULT '',
+			title       TEXT NOT NULL,
+			deleted_on  TEXT NOT NULL,
+			detected_at TEXT NOT NULL,
+			UNIQUE(apple_id, obsidian_id)
+		);
 	`)
 	if err != nil {
 		return err
