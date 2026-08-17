@@ -17,6 +17,7 @@ import (
 	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/missionctl-core/uistate"
 	"github.com/aeon022/notectl/internal/config"
+	"github.com/aeon022/notectl/internal/mirror"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
@@ -142,8 +143,9 @@ type noteRestoredMsg struct {
 	err  error
 }
 type syncDoneMsg struct {
-	count int
-	err   error
+	count         int
+	mirrorPending int
+	err           error
 }
 type writeDoneMsg struct {
 	note *models.Note
@@ -604,7 +606,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
-			m.setStatus(fmt.Sprintf("Synced %d notes", msg.count))
+			status := fmt.Sprintf("Synced %d notes", msg.count)
+			if msg.mirrorPending > 0 {
+				status += fmt.Sprintf(" (%d mirror deletion(s) pending — run 'notectl sync --apply-deletes')", msg.mirrorPending)
+			}
+			m.setStatus(status)
 			m.lastSynced = time.Now()
 			_ = lastsync.Save(config.LastSyncedPath(), m.lastSynced)
 			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
@@ -3112,7 +3118,24 @@ func doSyncCmd() tea.Cmd {
 			}
 			total += len(ns)
 		}
-		return syncDoneMsg{count: total, err: lastErr}
+
+		mirrorPending := 0
+		if config.MirrorEnabled() {
+			if !config.MirrorSourcesConfigured() {
+				// Same skip the CLI does: the flag alone isn't enough,
+				// sync_sources has to actually cover both sides.
+				if lastErr == nil {
+					lastErr = fmt.Errorf("mirror_apple_obsidian is set, but sync_sources doesn't include both apple and obsidian — mirror sync skipped")
+				}
+			} else if report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder); mErr != nil {
+				lastErr = mErr
+			} else {
+				total += report.Created + report.Updated
+				mirrorPending = report.PendingDeletes
+			}
+		}
+
+		return syncDoneMsg{count: total, mirrorPending: mirrorPending, err: lastErr}
 	}
 }
 

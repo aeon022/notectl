@@ -90,6 +90,33 @@ func SyncSources() []SourceType {
 	return out
 }
 
+// MirrorEnabled reports whether Apple Notes <-> Obsidian bidirectional
+// mirror sync is turned on via mirror_apple_obsidian: true. It only takes
+// effect when MirrorSourcesConfigured() also holds — every caller must
+// check both before running a mirror pass.
+func MirrorEnabled() bool {
+	return viper.GetBool("mirror_apple_obsidian")
+}
+
+// MirrorSourcesConfigured reports whether sync_sources covers both an Apple
+// Notes source and an obsidian-backed source (obsidian or markdown — they
+// share one backend and both tag their cache rows "obsidian", see
+// syncdispatch.SourceKey) — the minimum mirror.Sync needs to have anything
+// to diff against on both sides. Lives here rather than in cmd because all
+// four mirror entry points (sync, doctor, TUI, MCP) have to apply it.
+func MirrorSourcesConfigured() bool {
+	var hasApple, hasObsidian bool
+	for _, s := range SyncSources() {
+		switch s {
+		case SourceApple:
+			hasApple = true
+		case SourceObsidian, SourceMarkdown:
+			hasObsidian = true
+		}
+	}
+	return hasApple && hasObsidian
+}
+
 // VaultPathRaw returns the vault path as stored in config (may contain ~).
 func VaultPathRaw() string {
 	if p := viper.GetString("vault_path"); p != "" {

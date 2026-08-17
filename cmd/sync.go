@@ -5,10 +5,13 @@ import (
 	"fmt"
 
 	"github.com/aeon022/notectl/internal/config"
+	"github.com/aeon022/notectl/internal/mirror"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/aeon022/notectl/internal/syncdispatch"
 	"github.com/spf13/cobra"
 )
+
+var applyMirrorDeletes bool
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
@@ -40,6 +43,40 @@ var syncCmd = &cobra.Command{
 			}
 			fmt.Printf("\n  %d notes indexed\n", len(ns))
 		}
+
+		// Mutually exclusive on purpose: --apply-deletes must only ever act
+		// on deletions a PRIOR sync queued and the user has seen, so it
+		// never runs a mirror pass that could queue and apply a deletion in
+		// the same invocation.
+		switch {
+		case applyMirrorDeletes:
+			applied, errs, aErr := mirror.ApplyPendingDeletes(ctx, s, params.VaultPath)
+			fmt.Printf("\nApplied %d pending mirror deletion(s)\n", applied)
+			for _, e := range errs {
+				fmt.Println("  ! " + e)
+			}
+			if aErr != nil {
+				lastErr = aErr
+			}
+		case config.MirrorEnabled():
+			if !config.MirrorSourcesConfigured() {
+				fmt.Println("\nmirror_apple_obsidian is set, but sync_sources doesn't include both apple and obsidian — skipping mirror sync.")
+				break
+			}
+			report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder)
+			fmt.Printf("\nMirror sync: %d created, %d updated, %d already linked, %d pending delete(s)\n",
+				report.Created, report.Updated, report.LinkedExisting, report.PendingDeletes)
+			for _, e := range report.Errors {
+				fmt.Println("  ! " + e)
+			}
+			if report.PendingDeletes > 0 {
+				fmt.Println("  Run 'notectl sync --apply-deletes' to remove the mirrored copies.")
+			}
+			if mErr != nil {
+				lastErr = mErr
+			}
+		}
+
 		return lastErr
 	},
 }
@@ -62,5 +99,6 @@ func syncLabel(src config.SourceType, p syncdispatch.Params) string {
 }
 
 func init() {
+	syncCmd.Flags().BoolVar(&applyMirrorDeletes, "apply-deletes", false, "Apply queued mirror deletions (see mirror_apple_obsidian)")
 	rootCmd.AddCommand(syncCmd)
 }

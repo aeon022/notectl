@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aeon022/notectl/internal/config"
+	"github.com/aeon022/notectl/internal/mirror"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
@@ -471,6 +472,22 @@ func handleSync(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, 
 			_ = s.ReplaceFolders(ctx, srcKey, byAccount)
 		}
 		results = append(results, fmt.Sprintf("%s: %d notes", srcKey, len(ns)))
+	}
+
+	if config.MirrorEnabled() {
+		if !config.MirrorSourcesConfigured() {
+			// Same skip the CLI does: the flag alone isn't enough,
+			// sync_sources has to actually cover both sides.
+			results = append(results, "mirror: skipped (sync_sources doesn't include both apple and obsidian)")
+		} else if report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder); mErr != nil {
+			results = append(results, fmt.Sprintf("mirror: failed (%v)", mErr))
+		} else {
+			results = append(results, fmt.Sprintf("mirror: %d created, %d updated, %d pending delete(s)",
+				report.Created, report.Updated, report.PendingDeletes))
+			if report.PendingDeletes > 0 {
+				results = append(results, "run 'notectl sync --apply-deletes' from the CLI to remove the mirrored copies")
+			}
+		}
 	}
 
 	summary := strings.Join(results, ", ")

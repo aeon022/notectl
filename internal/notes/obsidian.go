@@ -61,7 +61,19 @@ func Read(vaultPath, title string) (*models.Note, error) {
 	return found, nil
 }
 
+// TargetPath returns the vault-relative path Write would write this
+// title/folder to. Write overwrites whatever sits there unconditionally, so
+// a caller that must not clobber an unrelated note (two different titles can
+// slugify to the same filename) can check this against the paths it already
+// listed first.
+func TargetPath(title, folder string) string {
+	return filepath.Join(folder, slugify(title)+".md")
+}
+
 // Write creates or overwrites a note in the vault.
+//
+// Known limitation: buildContent only re-emits tags/created, so any other
+// frontmatter key an existing file carries is dropped on overwrite.
 func Write(vaultPath, title, body string, tags []string, folder string) (*models.Note, error) {
 	dir := vaultPath
 	if folder != "" {

@@ -42,6 +42,7 @@ Syncs notes from your chosen source (or several at once) to a local SQLite cache
 ```
 notectl                         open TUI (default)
 notectl sync                    index vault into SQLite
+notectl sync --apply-deletes    apply queued mirror deletions
 notectl list [--folder NAME]    list notes
 notectl read TITLE              print a note
 notectl write TITLE             create/update a note
@@ -292,6 +293,7 @@ source: obsidian   # obsidian | apple | markdown | joplin
 | `vault_path` | Absolute or `~`-prefixed path to the vault root |
 | `source` | Where notes are read/written: `obsidian` (default), `apple` (Apple Notes), `markdown` (plain folder), `joplin` (via Joplin's Data API — see below) |
 | `sync_sources` | Comma-separated list, e.g. `apple,joplin` — sync several sources into one combined cache at once. Doesn't change where new notes are *written*; that's still whatever `source` is set to. Defaults to just `[source]` when unset. |
+| `mirror_apple_obsidian` | `true`/`false` (default `false`) — bidirectional mirror between Apple Notes and the Obsidian vault. Requires `sync_sources` to include both `apple` and `obsidian`/`markdown`. See [Mirroring Apple Notes and Obsidian](#mirroring-apple-notes-and-obsidian). |
 | `data_dir` | Directory for notectl's own SQLite index — set this to sync it across devices (see below) |
 | `joplin_api_url` | Joplin's local Data API base URL. Default `http://localhost:41184`. |
 | `joplin_token` | Joplin Data API auth token (Options → Web Clipper). Required for `source: joplin` or when `joplin` is in `sync_sources`. |
@@ -356,6 +358,38 @@ joplin_token: <token>
 ```
 
 The cache tags each note by its real source and only clears/re-indexes that source's rows per sync, so combining sources here is safe — nothing from one source gets clobbered by syncing another. `source` itself is unaffected: it's still the one place `write`/`write_note`/the TUI's `n` create a new note.
+
+---
+
+### Mirroring Apple Notes and Obsidian
+
+`mirror_apple_obsidian: true` turns `sync_sources: apple,obsidian` from a
+read-only combined view into a real bidirectional mirror: a note created or
+edited on either side is propagated to the other the next time `sync` runs
+(CLI `notectl sync`, TUI `s`, or the `sync_notes` MCP tool).
+
+```yaml
+source: apple
+sync_sources: apple,obsidian
+mirror_apple_obsidian: true
+vault_path: ~/path/to/your/vault
+```
+
+- Only the Apple Notes **default account** is mirrored — and only the
+  `apple_folder` folder, if you've set one.
+- Folders map 1:1 by path (`Projects/Foo` in one side ↔ `Projects/Foo` in the other).
+- If a note changed on both sides since the last sync, the newer one (by
+  modification time) wins and overwrites the other.
+- **Deletions are never applied automatically.** If a mirrored note
+  disappears from one side, `sync` reports it and queues it — run
+  `notectl sync --apply-deletes` to actually remove the mirrored copy on
+  the other side. `notectl doctor` shows how many are currently queued.
+  That run applies only what an earlier `sync` already queued and showed
+  you — it skips the mirror pass itself, so a deletion can never be
+  detected and applied in the same command.
+- Tags don't mirror to Apple Notes (Apple Notes has no equivalent concept
+  here) — an Obsidian note's tags are preserved in the vault but not pushed
+  to its Apple Notes counterpart.
 
 ---
 
