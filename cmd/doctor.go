@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/aeon022/missionctl-core/doctor"
 	"github.com/aeon022/notectl/internal/config"
+	"github.com/aeon022/notectl/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -27,6 +29,16 @@ var doctorCmd = &cobra.Command{
 			checks = append(checks, checkJoplin())
 		default:
 			checks = append(checks, checkVaultPath())
+		}
+		if config.MirrorEnabled() {
+			if !hasBothMirrorSources(config.SyncSources()) {
+				checks = append(checks, doctor.Check{
+					Label: "Mirror sync", OK: false,
+					Detail: "mirror_apple_obsidian is set, but sync_sources must include both apple and obsidian",
+				})
+			} else {
+				checks = append(checks, checkMirrorPendingDeletes())
+			}
 		}
 		if !doctor.PrintReport(checks) {
 			os.Exit(1)
@@ -80,6 +92,25 @@ func checkVaultPath() doctor.Check {
 			"%s (default — still unset if this isn't really your vault; set vault_path in ~/.config/notectl/notectl.yaml or NOTECTL_VAULT_PATH)",
 			config.VaultPath()),
 	}
+}
+
+// checkMirrorPendingDeletes surfaces the queued-deletion count so it's
+// visible from `doctor` without needing to re-run `sync` first — deletions
+// are never auto-applied, so this can otherwise sit invisible indefinitely.
+func checkMirrorPendingDeletes() doctor.Check {
+	s, err := store.New(config.DBPath(), config.Shared())
+	if err != nil {
+		return doctor.Check{Label: "Mirror pending deletes", OK: false, Detail: fmt.Sprintf("could not open cache: %v", err)}
+	}
+	defer s.Close()
+	n, err := s.CountMirrorPendingDeletes(context.Background())
+	if err != nil {
+		return doctor.Check{Label: "Mirror pending deletes", OK: false, Detail: fmt.Sprintf("query failed: %v", err)}
+	}
+	if n == 0 {
+		return doctor.Check{Label: "Mirror pending deletes", OK: true, Detail: "none"}
+	}
+	return doctor.Check{Label: "Mirror pending deletes", OK: true, Detail: fmt.Sprintf("%d queued — run 'notectl sync --apply-deletes' to apply", n)}
 }
 
 func init() {
