@@ -90,6 +90,14 @@ func SyncSources() []SourceType {
 	return out
 }
 
+// MirrorEnabled reports whether Apple Notes <-> Obsidian bidirectional
+// mirror sync is turned on via mirror_apple_obsidian: true. It only takes
+// effect when sync_sources also includes both apple and an obsidian-backed
+// source — see cmd.hasBothMirrorSources and doctor's check for that.
+func MirrorEnabled() bool {
+	return viper.GetBool("mirror_apple_obsidian")
+}
+
 // VaultPathRaw returns the vault path as stored in config (may contain ~).
 func VaultPathRaw() string {
 	if p := viper.GetString("vault_path"); p != "" {
