@@ -266,6 +266,14 @@ func UpsertApple(title, body, folder string) (string, error) {
 	return WriteApple(matchID, title, TextToHTML(plainBody), folder)
 }
 
+// DefaultAccountName returns the name of Apple Notes' "default account" —
+// the same account WriteApple/UpsertApple write to when no account is
+// specified — so callers that need to filter ListApple's results down to
+// just that account (it returns every account's notes) can do so.
+func DefaultAccountName() (string, error) {
+	return runAppleScript(`tell application "Notes" to get name of default account`)
+}
+
 // appleFolderRefChain turns a folder path like "Projects/Git" into an
 // AppleScript snippet that creates every missing level (top-level "Projects"
 // first, then "Git" inside it) and an AppleScript expression referring to
@@ -389,12 +397,15 @@ end tell
 }
 
 // UpdateBody writes an HTML body back to an existing Apple Notes note by id.
+// Deliberately not wrapped in a bare AppleScript `try`: that swallowed every
+// failure (stale id, note deleted elsewhere) into a successful-looking exit,
+// so callers recorded a lost edit as a completed write — same bug class
+// DeleteApple's comment describes. Now a real failure exits osascript
+// non-zero and comes back as an error.
 func UpdateBody(id, htmlBody string) error {
 	script := fmt.Sprintf(`
 tell application "Notes"
-	try
-		set body of note id "%s" to "%s"
-	end try
+	set body of note id "%s" to "%s"
 end tell
 `, escapeAS(rawAppleID(id)), escapeAS(htmlBody))
 	_, err := runAppleScript(script)
