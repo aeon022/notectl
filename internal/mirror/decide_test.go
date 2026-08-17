@@ -154,3 +154,26 @@ func TestDecide_BothSidesDeletedDropsLinkSilently(t *testing.T) {
 		t.Fatalf("RemoveLinks = %+v, want the stale link removed", d.RemoveLinks)
 	}
 }
+
+func TestDecide_BootstrapMultipleCandidatesFirstMatchWins(t *testing.T) {
+	apple := []models.Note{
+		{ID: "apple-1", Title: "Groceries", Body: "milk", Folder: "Shopping", ModTime: fixedTime},
+		{ID: "apple-2", Title: "Groceries", Body: "eggs", Folder: "Shopping", ModTime: fixedTime},
+	}
+	obs := []models.Note{
+		{ID: "obs-1", Title: "Groceries", Body: "milk", Folder: "Shopping", ModTime: fixedTime},
+	}
+	d := Decide(apple, obs, nil)
+	if len(d.NewLinks) != 1 {
+		t.Fatalf("NewLinks = %+v, want 1 (apple-1 claims obs-1)", d.NewLinks)
+	}
+	if d.NewLinks[0].AppleID != "apple-1" || d.NewLinks[0].ObsidianID != "obs-1" {
+		t.Fatalf("NewLinks[0] = %+v, want apple-1/obs-1", d.NewLinks[0])
+	}
+	if len(d.CreateInObsidian) != 1 || d.CreateInObsidian[0].ID != "apple-2" {
+		t.Fatalf("CreateInObsidian = %+v, want apple-2 (no remaining match)", d.CreateInObsidian)
+	}
+	if len(d.CreateInApple) != 0 || len(d.PushToApple) != 0 || len(d.PushToObsidian) != 0 {
+		t.Fatalf("unexpected extra decisions: %+v", d)
+	}
+}
