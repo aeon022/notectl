@@ -8,6 +8,7 @@ package mirror
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"time"
 
 	"github.com/aeon022/notectl/internal/models"
 )
@@ -25,12 +26,16 @@ type Link struct {
 }
 
 // Push carries the winning title/body/folder from one side of a linked
-// pair, to be written to the other side.
+// pair, to be written to the other side. ModTime is the source side's real
+// modification time — the target's own storage (a freshly written file's
+// mtime, an Apple note's own edit timestamp) doesn't preserve it on its
+// own, so callers applying a Push need it to stamp the target explicitly.
 type Push struct {
-	Title  string
-	Body   string
-	Folder string
-	Link   Link
+	Title   string
+	Body    string
+	Folder  string
+	ModTime time.Time
+	Link    Link
 }
 
 // PendingDelete records that a linked note disappeared from one side and
@@ -129,14 +134,14 @@ func Decide(appleNotes, obsidianNotes []models.Note, links []Link, pending []Pen
 			case !aChanged && !oChanged:
 				// nothing to do
 			case aChanged && !oChanged:
-				d.PushToObsidian = append(d.PushToObsidian, Push{Title: a.Title, Body: a.Body, Folder: a.Folder, Link: l})
+				d.PushToObsidian = append(d.PushToObsidian, Push{Title: a.Title, Body: a.Body, Folder: a.Folder, ModTime: a.ModTime, Link: l})
 			case oChanged && !aChanged:
-				d.PushToApple = append(d.PushToApple, Push{Title: o.Title, Body: o.Body, Folder: o.Folder, Link: l})
+				d.PushToApple = append(d.PushToApple, Push{Title: o.Title, Body: o.Body, Folder: o.Folder, ModTime: o.ModTime, Link: l})
 			default: // both changed since the last mirror pass: newer ModTime wins
 				if a.ModTime.After(o.ModTime) {
-					d.PushToObsidian = append(d.PushToObsidian, Push{Title: a.Title, Body: a.Body, Folder: a.Folder, Link: l})
+					d.PushToObsidian = append(d.PushToObsidian, Push{Title: a.Title, Body: a.Body, Folder: a.Folder, ModTime: a.ModTime, Link: l})
 				} else {
-					d.PushToApple = append(d.PushToApple, Push{Title: o.Title, Body: o.Body, Folder: o.Folder, Link: l})
+					d.PushToApple = append(d.PushToApple, Push{Title: o.Title, Body: o.Body, Folder: o.Folder, ModTime: o.ModTime, Link: l})
 				}
 			}
 		}
@@ -179,9 +184,9 @@ func Decide(appleNotes, obsidianNotes []models.Note, links []Link, pending []Pen
 		case aHash == oHash:
 			d.NewLinks = append(d.NewLinks, Link{AppleID: a.ID, AppleHash: aHash, ObsidianID: o.ID, ObsidianHash: oHash})
 		case a.ModTime.After(o.ModTime):
-			d.PushToObsidian = append(d.PushToObsidian, Push{Title: a.Title, Body: a.Body, Folder: a.Folder, Link: Link{AppleID: a.ID, ObsidianID: o.ID}})
+			d.PushToObsidian = append(d.PushToObsidian, Push{Title: a.Title, Body: a.Body, Folder: a.Folder, ModTime: a.ModTime, Link: Link{AppleID: a.ID, ObsidianID: o.ID}})
 		default:
-			d.PushToApple = append(d.PushToApple, Push{Title: o.Title, Body: o.Body, Folder: o.Folder, Link: Link{AppleID: a.ID, ObsidianID: o.ID}})
+			d.PushToApple = append(d.PushToApple, Push{Title: o.Title, Body: o.Body, Folder: o.Folder, ModTime: o.ModTime, Link: Link{AppleID: a.ID, ObsidianID: o.ID}})
 		}
 	}
 

@@ -3,6 +3,8 @@ package mirror
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -115,6 +117,7 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string) (R
 			report.Errors = append(report.Errors, fmt.Sprintf("create in obsidian %q: %v", n.Title, err))
 			continue
 		}
+		stampModTime(vaultPath, newNote.Path, n.ModTime)
 		// Hash what landed on disk, not what we asked for: Write prepends a
 		// "# title" heading, and the note's title comes back slugified.
 		if err := s.UpsertMirrorLink(ctx, store.MirrorLink{
@@ -145,6 +148,7 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string) (R
 			report.Errors = append(report.Errors, fmt.Sprintf("update obsidian %q: %v", p.Title, err))
 			continue
 		}
+		stampModTime(vaultPath, newNote.Path, p.ModTime)
 		// A title change moves the file to a new path, hence a new ID —
 		// clean up the old file so a rename doesn't leave an orphan copy.
 		if old.Path != "" && newNote.Path != old.Path {
@@ -281,6 +285,20 @@ func appleBody(title, body string) string {
 		return title
 	}
 	return title + "\n\n" + body
+}
+
+// stampModTime sets a just-written vault file's mtime to t — the source
+// side's real modification time. notes.Write always leaves the OS's own
+// write-time on the file, so without this every note mirrored (or pushed)
+// in one pass would carry today's timestamp regardless of when the
+// original note was actually last edited, clustering the whole batch at
+// the top of any mod_time-sorted view. Best-effort: a failure here is
+// cosmetic (sort order only), not worth failing the mirror pass over.
+func stampModTime(vaultPath, relPath string, t time.Time) {
+	if t.IsZero() {
+		return
+	}
+	_ = os.Chtimes(filepath.Join(vaultPath, relPath), t, t)
 }
 
 // ApplyPendingDeletes deletes the surviving side's note for every currently
