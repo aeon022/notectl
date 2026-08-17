@@ -294,6 +294,7 @@ source: obsidian   # obsidian | apple | markdown | joplin
 | `source` | Where notes are read/written: `obsidian` (default), `apple` (Apple Notes), `markdown` (plain folder), `joplin` (via Joplin's Data API — see below) |
 | `sync_sources` | Comma-separated list, e.g. `apple,joplin` — sync several sources into one combined cache at once. Doesn't change where new notes are *written*; that's still whatever `source` is set to. Defaults to just `[source]` when unset. |
 | `mirror_apple_obsidian` | `true`/`false` (default `false`) — bidirectional mirror between Apple Notes and the Obsidian vault. Requires `sync_sources` to include both `apple` and `obsidian`/`markdown`. See [Mirroring Apple Notes and Obsidian](#mirroring-apple-notes-and-obsidian). |
+| `exclude_folders` | Comma-separated vault subfolder names to skip entirely — for content another tool sharing this vault owns (e.g. a `diaryctl` `Diary` folder) that shouldn't be treated as notectl's own notes, shown in its combined view, or mirrored to Apple Notes. |
 | `data_dir` | Directory for notectl's own SQLite index — set this to sync it across devices (see below) |
 | `joplin_api_url` | Joplin's local Data API base URL. Default `http://localhost:41184`. |
 | `joplin_token` | Joplin Data API auth token (Options → Web Clipper). Required for `source: joplin` or when `joplin` is in `sync_sources`. |

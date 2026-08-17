@@ -479,7 +479,7 @@ func handleSync(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, 
 			// Same skip the CLI does: the flag alone isn't enough,
 			// sync_sources has to actually cover both sides.
 			results = append(results, "mirror: skipped (sync_sources doesn't include both apple and obsidian)")
-		} else if report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder); mErr != nil {
+		} else if report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder, params.ExcludeFolders); mErr != nil {
 			results = append(results, fmt.Sprintf("mirror: failed (%v)", mErr))
 		} else {
 			results = append(results, fmt.Sprintf("mirror: %d created, %d updated, %d pending delete(s)",

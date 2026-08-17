@@ -50,7 +50,7 @@ var syncCmd = &cobra.Command{
 		// the same invocation.
 		switch {
 		case applyMirrorDeletes:
-			applied, errs, aErr := mirror.ApplyPendingDeletes(ctx, s, params.VaultPath)
+			applied, errs, aErr := mirror.ApplyPendingDeletes(ctx, s, params.VaultPath, params.ExcludeFolders)
 			fmt.Printf("\nApplied %d pending mirror deletion(s)\n", applied)
 			for _, e := range errs {
 				fmt.Println("  ! " + e)
@@ -63,7 +63,7 @@ var syncCmd = &cobra.Command{
 				fmt.Println("\nmirror_apple_obsidian is set, but sync_sources doesn't include both apple and obsidian — skipping mirror sync.")
 				break
 			}
-			report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder)
+			report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder, params.ExcludeFolders)
 			fmt.Printf("\nMirror sync: %d created, %d updated, %d already linked, %d pending delete(s)\n",
 				report.Created, report.Updated, report.LinkedExisting, report.PendingDeletes)
 			for _, e := range report.Errors {

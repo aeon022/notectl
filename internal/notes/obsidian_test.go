@@ -54,12 +54,38 @@ func TestListSkipsHiddenDirs(t *testing.T) {
 	if _, err := Write(vault, "Visible", "body", nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	notes, err := List(vault)
+	notes, err := List(vault, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(notes) != 1 {
 		t.Fatalf("want 1 note (hidden dirs skipped), got %d: %+v", len(notes), notes)
+	}
+}
+
+func TestListSkipsExcludedFolders(t *testing.T) {
+	vault := testVault(t)
+	if _, err := Write(vault, "Visible", "body", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(vault, "2026-08-17", "diaryctl's own entry", nil, "Diary"); err != nil {
+		t.Fatal(err)
+	}
+
+	notes, err := List(vault, []string{"Diary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 1 || notes[0].Title != "Visible" {
+		t.Fatalf("want only the non-excluded note, got %d: %+v", len(notes), notes)
+	}
+
+	notes, err = List(vault, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 2 {
+		t.Fatalf("without an exclude list, want both notes, got %d: %+v", len(notes), notes)
 	}
 }
 

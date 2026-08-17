@@ -40,15 +40,17 @@ type appleWrite struct {
 //
 // appleFolder scopes the Apple side the same way vaultPath scopes the
 // Obsidian side (both are passed in rather than read from config, so this
-// package stays free of config).
-func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string) (Report, error) {
+// package stays free of config). excludeFolders skips vault subfolders that
+// belong to another tool sharing this vault (e.g. a diaryctl "Diary"
+// folder) — see notes.List.
+func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, excludeFolders []string) (Report, error) {
 	var report Report
 
 	appleNotes, err := listAppleScoped(appleFolder)
 	if err != nil {
 		return report, err
 	}
-	obsidianNotes, err := notes.List(vaultPath)
+	obsidianNotes, err := notes.List(vaultPath, excludeFolders)
 	if err != nil {
 		return report, fmt.Errorf("list vault: %w", err)
 	}
@@ -305,7 +307,7 @@ func stampModTime(vaultPath, relPath string, t time.Time) {
 // queued pending delete, then clears each one it successfully applied. A
 // per-item failure is left queued for the next attempt rather than silently
 // dropped.
-func ApplyPendingDeletes(ctx context.Context, s *store.Store, vaultPath string) (applied int, errs []string, err error) {
+func ApplyPendingDeletes(ctx context.Context, s *store.Store, vaultPath string, excludeFolders []string) (applied int, errs []string, err error) {
 	pending, err := s.ListMirrorPendingDeletes(ctx)
 	if err != nil {
 		return 0, nil, fmt.Errorf("list pending deletes: %w", err)
@@ -314,7 +316,7 @@ func ApplyPendingDeletes(ctx context.Context, s *store.Store, vaultPath string) 
 		return 0, nil, nil
 	}
 
-	obsidianNotes, lerr := notes.List(vaultPath)
+	obsidianNotes, lerr := notes.List(vaultPath, excludeFolders)
 	if lerr != nil {
 		return 0, nil, fmt.Errorf("list vault: %w", lerr)
 	}

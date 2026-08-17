@@ -17,9 +17,10 @@ import (
 // Params bundles the per-source inputs each backend's List needs. Fields
 // unrelated to the requested source are simply ignored.
 type Params struct {
-	AppleFolder  string
-	VaultPath    string
-	JoplinFolder string
+	AppleFolder    string
+	VaultPath      string
+	JoplinFolder   string
+	ExcludeFolders []string
 }
 
 // SourceKey is the store's `source` column value for src. Kept distinct
@@ -45,7 +46,7 @@ func List(src config.SourceType, p Params) ([]models.Note, error) {
 	case config.SourceJoplin:
 		return notes.ListJoplin(p.JoplinFolder)
 	default:
-		return notes.List(p.VaultPath)
+		return notes.List(p.VaultPath, p.ExcludeFolders)
 	}
 }
 
@@ -68,8 +69,9 @@ func SyncFolders(src config.SourceType) (map[string][]string, error) {
 // for every caller (TUI, CLI, MCP) since they all read the same settings.
 func ParamsFromConfig() Params {
 	return Params{
-		AppleFolder:  config.AppleFolder(),
-		VaultPath:    config.VaultPath(),
-		JoplinFolder: config.JoplinFolder(),
+		AppleFolder:    config.AppleFolder(),
+		VaultPath:      config.VaultPath(),
+		JoplinFolder:   config.JoplinFolder(),
+		ExcludeFolders: config.ExcludeFolders(),
 	}
 }

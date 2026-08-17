@@ -129,6 +129,25 @@ func VaultPath() string {
 	return expandHome(VaultPathRaw())
 }
 
+// ExcludeFolders returns vault subfolder names (comma-separated in config,
+// e.g. "Diary,Templates") to skip entirely during vault scans — for
+// content another tool sharing this vault owns (a diaryctl "Diary" folder,
+// say) that was never meant to be treated as notectl's own notes, browsed
+// in its combined view, or mirrored to Apple Notes.
+func ExcludeFolders() []string {
+	raw := viper.GetString("exclude_folders")
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if f := strings.TrimSpace(part); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // DBPath returns the database file path: data_dir (viper key, also settable
 // via NOTECTL_DATA_DIR) takes precedence — points it at a user-chosen
 // directory, e.g. inside iCloud Drive or Dropbox, resolved via

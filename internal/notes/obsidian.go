@@ -12,8 +12,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// List returns all markdown notes in the vault, sorted by mod time descending.
-func List(vaultPath string) ([]models.Note, error) {
+// List returns all markdown notes in the vault, sorted by mod time
+// descending. exclude names top-level-or-nested folders (matched against
+// any path segment, same convention as the built-in hidden-dir skip below)
+// that belong to another tool sharing this vault — e.g. a diaryctl "Diary"
+// folder — and should never be treated as notectl's own notes.
+func List(vaultPath string, exclude []string) ([]models.Note, error) {
 	var notes []models.Note
 	err := filepath.Walk(vaultPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -22,12 +26,20 @@ func List(vaultPath string) ([]models.Note, error) {
 		if !strings.HasSuffix(path, ".md") {
 			return nil
 		}
-		// skip hidden dirs (.obsidian, .git, etc.)
 		rel, _ := filepath.Rel(vaultPath, path)
 		for _, part := range strings.Split(filepath.Dir(rel), string(os.PathSeparator)) {
-			// "." is the vault root, not a hidden directory
-			if part != "." && strings.HasPrefix(part, ".") {
+			// "." is the vault root, not a real directory segment.
+			if part == "." {
+				continue
+			}
+			// skip hidden dirs (.obsidian, .git, etc.)
+			if strings.HasPrefix(part, ".") {
 				return nil
+			}
+			for _, ex := range exclude {
+				if part == ex {
+					return nil
+				}
 			}
 		}
 		n, err := readFile(vaultPath, path, info)

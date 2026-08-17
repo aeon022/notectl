@@ -3127,7 +3127,7 @@ func doSyncCmd() tea.Cmd {
 				if lastErr == nil {
 					lastErr = fmt.Errorf("mirror_apple_obsidian is set, but sync_sources doesn't include both apple and obsidian — mirror sync skipped")
 				}
-			} else if report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder); mErr != nil {
+			} else if report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder, params.ExcludeFolders); mErr != nil {
 				lastErr = mErr
 			} else {
 				total += report.Created + report.Updated
