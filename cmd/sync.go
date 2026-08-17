@@ -44,33 +44,36 @@ var syncCmd = &cobra.Command{
 			fmt.Printf("\n  %d notes indexed\n", len(ns))
 		}
 
-		if config.MirrorEnabled() {
-			if !hasBothMirrorSources(config.SyncSources()) {
-				fmt.Println("\nmirror_apple_obsidian is set, but sync_sources doesn't include both apple and obsidian — skipping mirror sync.")
-			} else {
-				report, mErr := mirror.Sync(ctx, s, params.VaultPath)
-				fmt.Printf("\nMirror sync: %d created, %d updated, %d already linked, %d pending delete(s)\n",
-					report.Created, report.Updated, report.LinkedExisting, report.PendingDeletes)
-				for _, e := range report.Errors {
-					fmt.Println("  ! " + e)
-				}
-				if report.PendingDeletes > 0 {
-					fmt.Println("  Run 'notectl sync --apply-deletes' to remove the mirrored copies.")
-				}
-				if mErr != nil {
-					lastErr = mErr
-				}
-			}
-		}
-
-		if applyMirrorDeletes {
-			applied, errs, aErr := mirror.ApplyPendingDeletes(ctx, s, config.VaultPath())
+		// Mutually exclusive on purpose: --apply-deletes must only ever act
+		// on deletions a PRIOR sync queued and the user has seen, so it
+		// never runs a mirror pass that could queue and apply a deletion in
+		// the same invocation.
+		switch {
+		case applyMirrorDeletes:
+			applied, errs, aErr := mirror.ApplyPendingDeletes(ctx, s, params.VaultPath)
 			fmt.Printf("\nApplied %d pending mirror deletion(s)\n", applied)
 			for _, e := range errs {
 				fmt.Println("  ! " + e)
 			}
 			if aErr != nil {
 				lastErr = aErr
+			}
+		case config.MirrorEnabled():
+			if !config.MirrorSourcesConfigured() {
+				fmt.Println("\nmirror_apple_obsidian is set, but sync_sources doesn't include both apple and obsidian — skipping mirror sync.")
+				break
+			}
+			report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder)
+			fmt.Printf("\nMirror sync: %d created, %d updated, %d already linked, %d pending delete(s)\n",
+				report.Created, report.Updated, report.LinkedExisting, report.PendingDeletes)
+			for _, e := range report.Errors {
+				fmt.Println("  ! " + e)
+			}
+			if report.PendingDeletes > 0 {
+				fmt.Println("  Run 'notectl sync --apply-deletes' to remove the mirrored copies.")
+			}
+			if mErr != nil {
+				lastErr = mErr
 			}
 		}
 
@@ -93,24 +96,6 @@ func syncLabel(src config.SourceType, p syncdispatch.Params) string {
 	default:
 		return fmt.Sprintf("Syncing vault: %s", p.VaultPath)
 	}
-}
-
-// hasBothMirrorSources reports whether sources covers both an Apple Notes
-// source and an obsidian-backed source (obsidian or markdown — they share
-// one backend and both tag their cache rows "obsidian", see
-// syncdispatch.SourceKey) — the minimum mirror.Sync needs to have anything
-// to diff against on both sides.
-func hasBothMirrorSources(sources []config.SourceType) bool {
-	var hasApple, hasObsidian bool
-	for _, s := range sources {
-		switch s {
-		case config.SourceApple:
-			hasApple = true
-		case config.SourceObsidian, config.SourceMarkdown:
-			hasObsidian = true
-		}
-	}
-	return hasApple && hasObsidian
 }
 
 func init() {

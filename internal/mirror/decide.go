@@ -61,13 +61,32 @@ func Hash(title, body string) string {
 }
 
 // Decide computes what a mirror pass should do, given the current note
-// lists from both sides and the previously persisted links. It performs no
-// I/O and mutates none of its inputs.
-func Decide(appleNotes, obsidianNotes []models.Note, links []Link) Decisions {
+// lists from both sides, the previously persisted links, and the deletions
+// still waiting for human confirmation. It performs no I/O and mutates none
+// of its inputs.
+//
+// pending is what stops a deletion from bouncing forever: queuing a pending
+// delete also drops the pair's link row, so the *surviving* note would
+// otherwise look brand new and unlinked on the next pass and get recreated
+// on the side the user just deleted it from. Every ID named by a queued
+// pending delete is therefore left entirely alone — no decision at all —
+// until `sync --apply-deletes` resolves the queue, after which the note is
+// treated as a normal unlinked note again.
+func Decide(appleNotes, obsidianNotes []models.Note, links []Link, pending []PendingDelete) Decisions {
 	var d Decisions
 
 	appleByID := indexByID(appleNotes)
 	obsByID := indexByID(obsidianNotes)
+
+	inLimbo := make(map[string]bool, 2*len(pending))
+	for _, p := range pending {
+		if p.AppleID != "" {
+			inLimbo[p.AppleID] = true
+		}
+		if p.ObsidianID != "" {
+			inLimbo[p.ObsidianID] = true
+		}
+	}
 
 	linkedApple := make(map[string]bool, len(links))
 	linkedObsidian := make(map[string]bool, len(links))
@@ -77,6 +96,13 @@ func Decide(appleNotes, obsidianNotes []models.Note, links []Link) Decisions {
 		_, obsStill := obsByID[l.ObsidianID]
 		linkedApple[l.AppleID] = true
 		linkedObsidian[l.ObsidianID] = true
+
+		// A pair that's already in the pending-delete queue shouldn't still
+		// have a link row (queuing removes it), but if one survived, leave
+		// it and both its notes untouched until the queue is resolved.
+		if inLimbo[l.AppleID] || inLimbo[l.ObsidianID] {
+			continue
+		}
 
 		switch {
 		case !appleStill && !obsStill:
@@ -121,13 +147,13 @@ func Decide(appleNotes, obsidianNotes []models.Note, links []Link) Decisions {
 	// already have the same note in both not create a duplicate.
 	var unlinkedApple []models.Note
 	for _, a := range appleNotes {
-		if !linkedApple[a.ID] {
+		if !linkedApple[a.ID] && !inLimbo[a.ID] {
 			unlinkedApple = append(unlinkedApple, a)
 		}
 	}
 	var unlinkedObs []models.Note
 	for _, o := range obsidianNotes {
-		if !linkedObsidian[o.ID] {
+		if !linkedObsidian[o.ID] && !inLimbo[o.ID] {
 			unlinkedObs = append(unlinkedObs, o)
 		}
 	}

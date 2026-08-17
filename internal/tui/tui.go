@@ -3121,7 +3121,13 @@ func doSyncCmd() tea.Cmd {
 
 		mirrorPending := 0
 		if config.MirrorEnabled() {
-			if report, mErr := mirror.Sync(ctx, s, params.VaultPath); mErr != nil {
+			if !config.MirrorSourcesConfigured() {
+				// Same skip the CLI does: the flag alone isn't enough,
+				// sync_sources has to actually cover both sides.
+				if lastErr == nil {
+					lastErr = fmt.Errorf("mirror_apple_obsidian is set, but sync_sources doesn't include both apple and obsidian — mirror sync skipped")
+				}
+			} else if report, mErr := mirror.Sync(ctx, s, params.VaultPath, params.AppleFolder); mErr != nil {
 				lastErr = mErr
 			} else {
 				total += report.Created + report.Updated

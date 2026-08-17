@@ -375,7 +375,8 @@ mirror_apple_obsidian: true
 vault_path: ~/path/to/your/vault
 ```
 
-- Only the Apple Notes **default account** is mirrored.
+- Only the Apple Notes **default account** is mirrored — and only the
+  `apple_folder` folder, if you've set one.
 - Folders map 1:1 by path (`Projects/Foo` in one side ↔ `Projects/Foo` in the other).
 - If a note changed on both sides since the last sync, the newer one (by
   modification time) wins and overwrites the other.
@@ -383,6 +384,9 @@ vault_path: ~/path/to/your/vault
   disappears from one side, `sync` reports it and queues it — run
   `notectl sync --apply-deletes` to actually remove the mirrored copy on
   the other side. `notectl doctor` shows how many are currently queued.
+  That run applies only what an earlier `sync` already queued and showed
+  you — it skips the mirror pass itself, so a deletion can never be
+  detected and applied in the same command.
 - Tags don't mirror to Apple Notes (Apple Notes has no equivalent concept
   here) — an Obsidian note's tags are preserved in the vault but not pushed
   to its Apple Notes counterpart.

@@ -31,7 +31,7 @@ var doctorCmd = &cobra.Command{
 			checks = append(checks, checkVaultPath())
 		}
 		if config.MirrorEnabled() {
-			if !hasBothMirrorSources(config.SyncSources()) {
+			if !config.MirrorSourcesConfigured() {
 				checks = append(checks, doctor.Check{
 					Label: "Mirror sync", OK: false,
 					Detail: "mirror_apple_obsidian is set, but sync_sources must include both apple and obsidian",
