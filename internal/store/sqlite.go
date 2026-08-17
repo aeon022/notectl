@@ -214,12 +214,26 @@ type Filter struct {
 	Limit   int
 }
 
+// excludeMirroredObsidianSQL hides the Obsidian side of any active mirror
+// link from a combined (all-sources) view — see List's doc comment on why.
+const excludeMirroredObsidianSQL = ` AND NOT (source='obsidian' AND id IN (SELECT obsidian_id FROM mirror_links))`
+
 func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
 	q := `SELECT id,title,body,tags,folder,account,path,source,mod_time,created FROM notes WHERE 1=1`
 	var args []any
 	if f.Source != "" {
 		q += ` AND source=?`
 		args = append(args, f.Source)
+	} else {
+		// No source filter means "everything, combined" — with the mirror
+		// active, a mirrored note is TWO rows here (its Apple row and its
+		// Obsidian mirror row), so an unfiltered list would show every
+		// mirrored note twice. Apple is the side notectl treats as
+		// canonical for combined browsing; hide the Obsidian row of any
+		// currently-linked pair. An explicit source=obsidian filter still
+		// sees it — that's a deliberate look at the vault's real content,
+		// not the combined view this dedup is for.
+		q += excludeMirroredObsidianSQL
 	}
 	if f.Account != "" {
 		q += ` AND account=?`
@@ -314,10 +328,10 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 // in this file: two accounts can have identically-named folders, and an
 // unscoped GROUP BY folder would silently merge their counts.
 func (s *Store) CountByFolder(ctx context.Context, account string) (map[string]int, error) {
-	q := `SELECT folder, COUNT(*) FROM notes`
+	q := `SELECT folder, COUNT(*) FROM notes WHERE 1=1` + excludeMirroredObsidianSQL
 	var args []any
 	if account != "" {
-		q += ` WHERE account = ?`
+		q += ` AND account = ?`
 		args = append(args, account)
 	}
 	q += ` GROUP BY folder`
@@ -384,7 +398,7 @@ func (s *Store) ListAccounts(ctx context.Context) ([]string, error) {
 // for the "All accounts" row-0 tab — same convention as CountByFolder.
 func (s *Store) CountByAccount(ctx context.Context) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT account, COUNT(*) FROM notes GROUP BY account`)
+		`SELECT account, COUNT(*) FROM notes WHERE 1=1`+excludeMirroredObsidianSQL+` GROUP BY account`)
 	if err != nil {
 		return nil, err
 	}

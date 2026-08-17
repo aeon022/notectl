@@ -115,3 +115,72 @@ func TestReplaceFolders_DropsFoldersMissingFromLatestSync(t *testing.T) {
 		t.Errorf("knownFolders() = %v, want exactly [Notizen] — Archiv should be gone", folders)
 	}
 }
+
+// A mirrored note is genuinely two rows (its Apple row and its Obsidian
+// mirror row) — an unfiltered combined List must show it once (the Apple
+// side), while an explicit source=obsidian filter still sees the real
+// vault content. CountByFolder/CountByAccount must agree with List so a
+// folder tab's count matches what's actually listed under it.
+func TestList_HidesObsidianSideOfMirroredPair(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := s.Upsert(ctx, &models.Note{
+		ID: "apple-1", Title: "Groceries", Folder: "Shopping", Account: "iCloud", Source: "apple", ModTime: now, Created: now,
+	}); err != nil {
+		t.Fatalf("Upsert(apple) error = %v", err)
+	}
+	if err := s.Upsert(ctx, &models.Note{
+		ID: "obs-1", Title: "Groceries", Folder: "Shopping", Source: "obsidian", ModTime: now, Created: now,
+	}); err != nil {
+		t.Fatalf("Upsert(obsidian) error = %v", err)
+	}
+	// An unlinked pair (no mirror_links row) isn't a mirror yet — both
+	// rows should still show up.
+	if err := s.Upsert(ctx, &models.Note{
+		ID: "obs-unlinked", Title: "Unrelated", Folder: "Shopping", Source: "obsidian", ModTime: now, Created: now,
+	}); err != nil {
+		t.Fatalf("Upsert(unlinked) error = %v", err)
+	}
+
+	all, err := s.List(ctx, Filter{})
+	if err != nil {
+		t.Fatalf("List(unfiltered) error = %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("List(unfiltered) before linking = %d notes, want 3 (nothing hidden yet — no mirror_links row): %+v", len(all), all)
+	}
+
+	if err := s.UpsertMirrorLink(ctx, MirrorLink{AppleID: "apple-1", AppleHash: "h", ObsidianID: "obs-1", ObsidianHash: "h", LastSynced: now}); err != nil {
+		t.Fatalf("UpsertMirrorLink() error = %v", err)
+	}
+
+	all, err = s.List(ctx, Filter{})
+	if err != nil {
+		t.Fatalf("List(unfiltered) error = %v", err)
+	}
+	ids := map[string]bool{}
+	for _, n := range all {
+		ids[n.ID] = true
+	}
+	if len(all) != 2 || !ids["apple-1"] || !ids["obs-unlinked"] || ids["obs-1"] {
+		t.Fatalf("List(unfiltered) after linking = %+v, want [apple-1, obs-unlinked] with obs-1 hidden", all)
+	}
+
+	obsOnly, err := s.List(ctx, Filter{Source: "obsidian"})
+	if err != nil {
+		t.Fatalf("List(source=obsidian) error = %v", err)
+	}
+	if len(obsOnly) != 2 {
+		t.Fatalf("List(source=obsidian) = %d notes, want 2 — an explicit source filter must still see the real vault content", len(obsOnly))
+	}
+
+	counts, err := s.CountByFolder(ctx, "")
+	if err != nil {
+		t.Fatalf("CountByFolder() error = %v", err)
+	}
+	if counts["Shopping"] != 2 {
+		t.Errorf("CountByFolder()[Shopping] = %d, want 2 (matching the deduped List count)", counts["Shopping"])
+	}
+}
