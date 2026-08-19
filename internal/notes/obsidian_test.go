@@ -39,6 +39,32 @@ func TestWriteAndRead(t *testing.T) {
 	}
 }
 
+// TestTitleSurvivesLossySlugRoundTrip guards the mirror-duplication bug:
+// slugify() strips emoji/punctuation, so before frontmatter carried the
+// real title, re-reading a note reported its lossy slug as the title
+// instead — which broke mirror's exact-title bootstrap matching in
+// internal/mirror/decide.go and spawned duplicate Apple notes on every
+// sync pass instead of linking to the existing one.
+func TestTitleSurvivesLossySlugRoundTrip(t *testing.T) {
+	vault := testVault(t)
+	const title = "👶 Baby-Checkliste — Geburt ca. 28.12.2026 (Graz)"
+
+	if _, err := Write(vault, title, "body", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	notes, err := List(vault, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("expected 1 note, got %d", len(notes))
+	}
+	if notes[0].Title != title {
+		t.Errorf("Title = %q, want %q (fell back to the lossy slug)", notes[0].Title, title)
+	}
+}
+
 func TestWriteIntoFolder(t *testing.T) {
 	vault := testVault(t)
 	if _, err := Write(vault, "Idea", "body", nil, "inbox"); err != nil {

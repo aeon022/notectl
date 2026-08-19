@@ -142,6 +142,7 @@ func Search(vaultPath, query string, limit int) ([]models.Note, error) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 type frontmatter struct {
+	Title   string    `yaml:"title"`
 	Tags    []string  `yaml:"tags"`
 	Created time.Time `yaml:"created"`
 }
@@ -170,6 +171,19 @@ func readFile(vaultPath, path string, info os.FileInfo) (models.Note, error) {
 			if !fm.Created.IsZero() {
 				created = fm.Created
 			}
+			// A slugified filename (spaces/emoji/punctuation stripped, see
+			// slugify below) is lossy and can never round-trip back to the
+			// real title on its own — without this, re-reading a note this
+			// package itself wrote reports a mangled title that no longer
+			// matches its Apple Notes counterpart, which broke mirror's
+			// exact-title bootstrap matching (see internal/mirror/decide.go)
+			// and spawned duplicate notes instead of linking to the existing
+			// one. Notes without a title: frontmatter entry (pre-existing
+			// vault files, or ones from outside notectl) keep using the
+			// filename as before.
+			if fm.Title != "" {
+				title = fm.Title
+			}
 		}
 	}
 
@@ -189,16 +203,26 @@ func readFile(vaultPath, path string, info os.FileInfo) (models.Note, error) {
 
 func buildContent(title, body string, tags []string) string {
 	var sb strings.Builder
+	sb.WriteString("---\ntitle: " + yamlSingleQuote(title) + "\n")
 	if len(tags) > 0 {
-		sb.WriteString("---\ntags:")
+		sb.WriteString("tags:")
 		for _, t := range tags {
 			sb.WriteString("\n  - " + t)
 		}
-		sb.WriteString("\ncreated: " + time.Now().Format("2006-01-02") + "\n---\n\n")
+		sb.WriteString("\n")
 	}
+	sb.WriteString("created: " + time.Now().Format("2006-01-02") + "\n---\n\n")
 	sb.WriteString("# " + title + "\n\n")
 	sb.WriteString(body)
 	return sb.String()
+}
+
+// yamlSingleQuote renders s as a single-quoted YAML scalar (doubling
+// embedded quotes, YAML's own escape for that style) so a title containing
+// ":", "#", or other block-scalar-breaking characters can't corrupt the
+// frontmatter block.
+func yamlSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func noteID(rel string) string {

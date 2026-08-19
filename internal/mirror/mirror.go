@@ -92,7 +92,7 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, ex
 		// No appleBody() here: WriteApple's create path prefixes the title
 		// onto the body itself (see its doc comment). appleBody is for the
 		// update path only, below.
-		appleID, err := notes.WriteApple("", n.Title, notes.TextToHTML(n.Body), n.Folder)
+		appleID, err := notes.WriteApple("", n.Title, notes.TextToHTML(stripLeadingTitleHeading(n.Title, n.Body)), n.Folder)
 		if err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("create in apple %q: %v", n.Title, err))
 			continue
@@ -134,7 +134,8 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, ex
 	}
 
 	for _, p := range d.PushToApple {
-		if err := notes.UpdateBody(p.Link.AppleID, notes.TextToHTML(appleBody(p.Title, p.Body))); err != nil {
+		body := appleBody(p.Title, stripLeadingTitleHeading(p.Title, p.Body))
+		if err := notes.UpdateBody(p.Link.AppleID, notes.TextToHTML(body)); err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("update apple %q: %v", p.Title, err))
 			continue
 		}
@@ -287,6 +288,22 @@ func appleBody(title, body string) string {
 		return title
 	}
 	return title + "\n\n" + body
+}
+
+// stripLeadingTitleHeading removes an Obsidian vault body's own leading
+// "# title" heading (added by notes.Write's buildContent, see obsidian.go)
+// before the content is pushed to Apple Notes — Apple gets its title
+// prefixed separately (WriteApple's create path, or appleBody above), so
+// without this the title ended up duplicated at the top of every note
+// pushed from Obsidian to Apple. Leaves body untouched if it doesn't start
+// with the expected heading (title changed since this vault file was
+// written, or the file predates this fix) rather than guess.
+func stripLeadingTitleHeading(title, body string) string {
+	rest := strings.TrimPrefix(body, "# "+title)
+	if rest == body {
+		return body
+	}
+	return strings.TrimLeft(rest, "\n")
 }
 
 // stampModTime sets a just-written vault file's mtime to t — the source
