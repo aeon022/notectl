@@ -172,28 +172,11 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 		}
 	}
 
-	var n *models.Note
-	switch config.Source() {
-	case config.SourceApple:
-		id, werr := notes.UpsertApple(title, body, folder)
-		if werr != nil {
-			return mcp.NewToolResultError(werr.Error()), nil
-		}
-		now := time.Now()
-		n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "apple", ModTime: now, Created: now}
-	case config.SourceJoplin:
-		id, werr := notes.WriteJoplin("", title, body, folder)
-		if werr != nil {
-			return mcp.NewToolResultError(werr.Error()), nil
-		}
-		now := time.Now()
-		n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "joplin", ModTime: now, Created: now}
-	default:
-		var werr error
-		n, werr = notes.Write(config.VaultPath(), title, body, tags, folder)
-		if werr != nil {
-			return mcp.NewToolResultError(werr.Error()), nil
-		}
+	n, werr := syncdispatch.WriteBySource(config.Source(), syncdispatch.WriteParams{
+		Title: title, Body: body, Tags: tags, Folder: folder, VaultPath: config.VaultPath(),
+	})
+	if werr != nil {
+		return mcp.NewToolResultError(werr.Error()), nil
 	}
 
 	// update cache
@@ -300,19 +283,8 @@ func handleDelete(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 	}
 
 	n := matches[0]
-	switch config.Source() {
-	case config.SourceApple:
-		if err := notes.DeleteApple(n.ID); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-	case config.SourceJoplin:
-		if err := notes.DeleteJoplin(n.ID); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-	default:
-		if err := notes.Delete(config.VaultPath(), n.Path); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
+	if err := syncdispatch.DeleteBySource(config.Source(), n.ID, config.VaultPath(), n.Path); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 	if err := s.Delete(ctx, n.ID); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil

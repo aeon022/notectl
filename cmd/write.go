@@ -6,12 +6,10 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/aeon022/notectl/internal/config"
-	"github.com/aeon022/notectl/internal/models"
-	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
+	"github.com/aeon022/notectl/internal/syncdispatch"
 	"github.com/spf13/cobra"
 )
 
@@ -43,28 +41,11 @@ var writeCmd = &cobra.Command{
 			}
 		}
 
-		var n *models.Note
-		switch config.Source() {
-		case config.SourceApple:
-			id, werr := notes.UpsertApple(title, body, folder)
-			if werr != nil {
-				return werr
-			}
-			now := time.Now()
-			n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "apple", ModTime: now, Created: now}
-		case config.SourceJoplin:
-			id, werr := notes.WriteJoplin("", title, body, folder)
-			if werr != nil {
-				return werr
-			}
-			now := time.Now()
-			n = &models.Note{ID: id, Title: title, Body: body, Tags: tags, Folder: folder, Source: "joplin", ModTime: now, Created: now}
-		default:
-			var werr error
-			n, werr = notes.Write(config.VaultPath(), title, body, tags, folder)
-			if werr != nil {
-				return werr
-			}
+		n, werr := syncdispatch.WriteBySource(config.Source(), syncdispatch.WriteParams{
+			Title: title, Body: body, Tags: tags, Folder: folder, VaultPath: config.VaultPath(),
+		})
+		if werr != nil {
+			return werr
 		}
 
 		// update SQLite cache

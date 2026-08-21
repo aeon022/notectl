@@ -9,6 +9,8 @@
 package syncdispatch
 
 import (
+	"time"
+
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
@@ -63,6 +65,80 @@ func SyncFolders(src config.SourceType) (map[string][]string, error) {
 		return nil, nil
 	}
 	return notes.ListAppleAccountFolders()
+}
+
+// WriteParams bundles per-source inputs for WriteBySource. Not every field
+// applies to every source.
+type WriteParams struct {
+	// ID is the existing note's id to update in place. Joplin and (when
+	// AppleBody is set) Apple use it directly; empty creates a new note.
+	// Obsidian/Markdown's notes.Write always matches by title/slug instead,
+	// regardless of ID.
+	ID     string
+	Title  string
+	Body   string
+	Tags   []string
+	Folder string
+	// AppleBody, when set, is the exact (already HTML, possibly block-
+	// reconciled) body to send via notes.WriteApple(ID, ...) — used by the
+	// TUI editor, which already knows the note's id and does its own
+	// title-prefix/block-reconciliation prep before calling in. Left empty,
+	// Apple instead looks the note up by title and creates-or-updates it
+	// via notes.UpsertApple — the plain create/update path `notectl write`
+	// and the write_note MCP tool use, neither of which ever has an id or
+	// pre-rendered HTML to give.
+	AppleBody string
+	VaultPath string
+}
+
+// WriteBySource writes a note to src's real backend and returns the
+// resulting note, ready to hand to store.Upsert — the write-side pair to
+// List above. Centralizes what was previously the same switch on
+// config.Source() duplicated in cmd/write.go, mcpserver's handleWrite, and
+// the TUI's writeNoteCmd.
+func WriteBySource(src config.SourceType, p WriteParams) (*models.Note, error) {
+	now := time.Now()
+	switch src {
+	case config.SourceApple:
+		if p.AppleBody == "" {
+			id, err := notes.UpsertApple(p.Title, p.Body, p.Folder)
+			if err != nil {
+				return nil, err
+			}
+			return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, Folder: p.Folder, Source: "apple", ModTime: now, Created: now}, nil
+		}
+		id, err := notes.WriteApple(p.ID, p.Title, p.AppleBody, p.Folder)
+		if err != nil {
+			return nil, err
+		}
+		return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, Folder: p.Folder, Source: "apple", ModTime: now, Created: now}, nil
+	case config.SourceJoplin:
+		id, err := notes.WriteJoplin(p.ID, p.Title, p.Body, p.Folder)
+		if err != nil {
+			return nil, err
+		}
+		return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, Folder: p.Folder, Source: "joplin", ModTime: now, Created: now}, nil
+	default:
+		return notes.Write(p.VaultPath, p.Title, p.Body, p.Tags, p.Folder)
+	}
+}
+
+// DeleteBySource deletes a note by id from src's real backend — the
+// delete-side pair to WriteBySource above. vaultPath/path are only used for
+// the Obsidian/Markdown default (notes.Delete); an empty path there deletes
+// vaultPath itself, so callers that can see an empty path (the TUI's
+// deleteNoteCmd) must guard against that themselves before calling in —
+// the MCP handler never sees an empty path since it always comes from a
+// real cached note row.
+func DeleteBySource(src config.SourceType, id, vaultPath, path string) error {
+	switch src {
+	case config.SourceApple:
+		return notes.DeleteApple(id)
+	case config.SourceJoplin:
+		return notes.DeleteJoplin(id)
+	default:
+		return notes.Delete(vaultPath, path)
+	}
 }
 
 // ParamsFromConfig builds Params from the current config — the common case

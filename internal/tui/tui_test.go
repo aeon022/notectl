@@ -9,10 +9,10 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/spf13/viper"
 )
 
 // withAppleSource temporarily makes config.Source() return SourceApple,
@@ -20,9 +20,9 @@ import (
 // disambiguation this file tests for only applies to that source.
 func withAppleSource(t *testing.T) {
 	t.Helper()
-	prev := viper.GetString("source")
-	viper.Set("source", "apple")
-	t.Cleanup(func() { viper.Set("source", prev) })
+	prev := config.GetForTest("source")
+	config.SetForTest("source", "apple")
+	t.Cleanup(func() { config.SetForTest("source", prev) })
 }
 
 func TestChecklistLookup_RealStateOverridesFakeCheckbox(t *testing.T) {
@@ -617,8 +617,8 @@ func TestWindowSizeMsg_NeverSetsHeightToRealTerminalHeight(t *testing.T) {
 // no longer collapses the tree as long as globalAccount is still "".
 func TestLoadNotesCmd_BoundTabAccountDoesNotCollapseAccountAwareTree(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "notectl.db")
-	viper.Set("db_path", dbPath)
-	t.Cleanup(func() { viper.Set("db_path", "") })
+	config.SetForTest("db_path", dbPath)
+	t.Cleanup(func() { config.SetForTest("db_path", "") })
 
 	s, err := store.New(dbPath, false)
 	if err != nil {
@@ -691,8 +691,8 @@ func drainCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
 // that reported this.
 func TestFullAppWalk_TabTreeNeverCollapsesMidWalk(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "notectl.db")
-	viper.Set("db_path", dbPath)
-	t.Cleanup(func() { viper.Set("db_path", "") })
+	config.SetForTest("db_path", dbPath)
+	t.Cleanup(func() { config.SetForTest("db_path", "") })
 
 	s, err := store.New(dbPath, false)
 	if err != nil {

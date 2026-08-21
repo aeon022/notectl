@@ -6,26 +6,26 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/spf13/viper"
 )
 
 // setupTest points config.DBPath()/config.VaultPath() at a temporary DB and a
-// temporary directory via the existing viper overrides, and seeds the DB with
-// one note. All handlers exercised here go through internal/notes/obsidian.go
-// (plain filesystem I/O against the temp vault) — none of them touch
-// internal/notes/apple.go's AppleScript integration.
+// temporary directory via the existing config test overrides, and seeds the
+// DB with one note. All handlers exercised here go through
+// internal/notes/obsidian.go (plain filesystem I/O against the temp vault) —
+// none of them touch internal/notes/apple.go's AppleScript integration.
 func setupTest(t *testing.T) string {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "notectl.db")
 	vaultPath := t.TempDir()
-	viper.Set("db_path", dbPath)
-	viper.Set("vault_path", vaultPath)
+	config.SetForTest("db_path", dbPath)
+	config.SetForTest("vault_path", vaultPath)
 	t.Cleanup(func() {
-		viper.Set("db_path", "")
-		viper.Set("vault_path", "")
+		config.SetForTest("db_path", "")
+		config.SetForTest("vault_path", "")
 	})
 
 	s, err := store.New(dbPath, false)

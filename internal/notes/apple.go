@@ -565,11 +565,7 @@ func mdInlineToHTML(s string) string {
 }
 
 func htmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, `"`, "&quot;")
-	return s
+	return html.EscapeString(s)
 }
 
 // DeleteApple moves a note to Trash in Apple Notes. Returns an error if no

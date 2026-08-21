@@ -3284,17 +3284,12 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 		// file already gone) left the real note/file alive and untracked
 		// while the cache said it was gone. Same bug class fixed in
 		// calctl's DeleteEvent on 2026-08-01.
-		switch {
-		case config.Source() == config.SourceApple:
-			if err := notes.DeleteApple(id); err != nil {
-				return deletedMsg{err}
-			}
-		case config.Source() == config.SourceJoplin:
-			if err := notes.DeleteJoplin(id); err != nil {
-				return deletedMsg{err}
-			}
-		case relPath != "":
-			if err := notes.Delete(config.VaultPath(), relPath); err != nil {
+		// The obsidian/markdown default only fires when relPath is actually
+		// set — syncdispatch.DeleteBySource's default calls notes.Delete
+		// unconditionally, and an empty relPath there would delete
+		// vaultPath itself.
+		if src := config.Source(); src == config.SourceApple || src == config.SourceJoplin || relPath != "" {
+			if err := syncdispatch.DeleteBySource(src, id, config.VaultPath(), relPath); err != nil {
 				return deletedMsg{err}
 			}
 		}
@@ -3388,11 +3383,8 @@ func writeNoteCmd(id, title, body, tagsStr, folder string, editBlocks []notes.Bl
 			}
 		}
 
-		var n *models.Note
-		var err error
-
-		switch config.Source() {
-		case config.SourceApple:
+		var appleBody string
+		if config.Source() == config.SourceApple {
 			plainBody := body
 			if id != "" {
 				// Update path: WriteApple only touches body, and Apple
@@ -3404,33 +3396,14 @@ func writeNoteCmd(id, title, body, tagsStr, folder string, editBlocks []notes.Bl
 					plainBody = title + "\n\n" + body
 				}
 			}
-			htmlBody := notes.ReconcileBlocks(editBlocks, plainBody)
-			var newID string
-			newID, err = notes.WriteApple(id, title, htmlBody, folder)
-			if err != nil {
-				return writeDoneMsg{err: err}
-			}
-			n = &models.Note{
-				ID: newID, Title: title, Body: body,
-				Tags: tags, Folder: folder, Source: "apple",
-				ModTime: time.Now(), Created: time.Now(),
-			}
-		case config.SourceJoplin:
-			var newID string
-			newID, err = notes.WriteJoplin(id, title, body, folder)
-			if err != nil {
-				return writeDoneMsg{err: err}
-			}
-			n = &models.Note{
-				ID: newID, Title: title, Body: body,
-				Tags: tags, Folder: folder, Source: "joplin",
-				ModTime: time.Now(), Created: time.Now(),
-			}
-		default:
-			n, err = notes.Write(config.VaultPath(), title, body, tags, folder)
-			if err != nil {
-				return writeDoneMsg{err: err}
-			}
+			appleBody = notes.ReconcileBlocks(editBlocks, plainBody)
+		}
+		n, err := syncdispatch.WriteBySource(config.Source(), syncdispatch.WriteParams{
+			ID: id, Title: title, Body: body, AppleBody: appleBody,
+			Tags: tags, Folder: folder, VaultPath: config.VaultPath(),
+		})
+		if err != nil {
+			return writeDoneMsg{err: err}
 		}
 
 		if s, serr := store.New(config.DBPath(), config.Shared()); serr == nil {

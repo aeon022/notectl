@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	runewidth "github.com/mattn/go-runewidth"
 )
 
@@ -129,8 +129,8 @@ func TestStripVariationSelectorsAgreeOnWidth(t *testing.T) {
 	if got != want {
 		t.Errorf("stripVariationSelectors(%q) = %q, want %q", in, got, want)
 	}
-	if lipgloss.Width(got) != runewidth.StringWidth(got) {
-		t.Errorf("after stripping, lipgloss.Width(%q)=%d and runewidth.StringWidth=%d should agree, but don't", got, lipgloss.Width(got), runewidth.StringWidth(got))
+	if ansi.StringWidth(got) != runewidth.StringWidth(got) {
+		t.Errorf("after stripping, ansi.StringWidth(%q)=%d and runewidth.StringWidth=%d should agree, but don't", got, ansi.StringWidth(got), runewidth.StringWidth(got))
 	}
 }
 
