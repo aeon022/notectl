@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/store"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/viper"
 )
 
@@ -132,7 +132,13 @@ func TestRenderMDLineCheckboxes(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		got := renderMDLine(tc.in, 80)
+		// ansi.Strip, not a raw substring check on got directly — lipgloss
+		// v2 can wrap styled text rune-by-rune (each with its own SGR open
+		// and reset) rather than one wrap around the whole span, so a
+		// contiguous "☑ " never appears literally when strikethrough is on;
+		// stripping ANSI first checks what's actually visible, which is
+		// what this test cares about, not the specific escape-code shape.
+		got := ansi.Strip(renderMDLine(tc.in, 80))
 		if !strings.Contains(got, tc.wantContain) {
 			t.Errorf("renderMDLine(%q) = %q, want it to contain %q", tc.in, got, tc.wantContain)
 		}
@@ -162,7 +168,7 @@ func TestPreprocessAndRenderMarkdownTables(t *testing.T) {
 }
 
 func TestRenderScrollbarAlignsGlyphColumn(t *testing.T) {
-	vp := viewport.New(20, 5)
+	vp := viewport.New(viewport.WithWidth(20), viewport.WithHeight(5))
 	// Content with very different line lengths, and more lines than the
 	// viewport height so the scrollbar thumb/track actually renders.
 	vp.SetContent("a\nbb\nccccccccccccccccc\nd\nee\nfff\ng")
@@ -179,7 +185,7 @@ func TestRenderScrollbarAlignsGlyphColumn(t *testing.T) {
 		// thumb "█", both single-width). Its byte-rune column should be
 		// identical across every line regardless of that line's own text
 		// length — a mismatch means the glyph isn't forming a straight bar.
-		col := len([]rune(l)) - 1
+		col := len([]rune(ansi.Strip(l))) - 1
 		if glyphCol == -1 {
 			glyphCol = col
 			continue
@@ -197,7 +203,7 @@ func TestRenderScrollbarAlignsGlyphColumn_VariationSelectorEmoji(t *testing.T) {
 	// line before appending the scrollbar glyph — threw just this line's
 	// glyph one column out of alignment with every other row (looked like
 	// a notch bulging out of the scrollbar).
-	vp := viewport.New(20, 4)
+	vp := viewport.New(viewport.WithWidth(20), viewport.WithHeight(4))
 	vp.SetContent("plain line one\n🛏️ Schlafen\nplain line three\nplain line four\nplain line five\nplain line six")
 
 	out := renderScrollbar(vp, "")
@@ -205,7 +211,7 @@ func TestRenderScrollbarAlignsGlyphColumn_VariationSelectorEmoji(t *testing.T) {
 
 	glyphCol := -1
 	for i, l := range lines {
-		col := len([]rune(l)) - 1
+		col := len([]rune(ansi.Strip(l))) - 1
 		if glyphCol == -1 {
 			glyphCol = col
 			continue
@@ -216,23 +222,64 @@ func TestRenderScrollbarAlignsGlyphColumn_VariationSelectorEmoji(t *testing.T) {
 	}
 }
 
+// Regression test for a real, live-reproduced bug: Bubble Tea calls
+// model.View() and writes a render for every message it receives,
+// regardless of whether Update actually changed anything — and
+// WithMouseAllMotion reports every pixel of mouse movement, not just cell
+// crossings. On a fast trackpad that's dozens of forced renders a second
+// from hovering alone. Confirmed live: adding an artificial per-render
+// delay (temporary debug logging on every View() call) made the reported
+// corruption (a tab/header row duplicating and staying stuck) stop
+// reproducing — pointing at render-rate/timing, not rendered content
+// (already-logged frames were byte-for-byte correct throughout a live
+// repro). motionThrottleFilter is the deliberate, permanent version of
+// that same backpressure: drop excess MouseActionMotion messages before
+// they ever reach Update/View, let everything else through untouched.
+func TestMotionThrottleFilter(t *testing.T) {
+	filter := motionThrottleFilter()
+	m := New("")
+
+	motion := tea.MouseMotionMsg{X: 1, Y: 1}
+	if got := filter(m, motion); got == nil {
+		t.Fatal("first motion message should pass through, got dropped (nil)")
+	}
+	if got := filter(m, motion); got != nil {
+		t.Errorf("second motion message immediately after should be throttled (nil), got %v", got)
+	}
+
+	// Non-motion messages are never throttled, motion or not.
+	press := tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: 1}
+	if got := filter(m, press); got == nil {
+		t.Error("a press message should never be throttled, got dropped (nil)")
+	}
+	key := tea.KeyPressMsg{Code: tea.KeyEnter}
+	if got := filter(m, key); got == nil {
+		t.Error("a key message should never be throttled, got dropped (nil)")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if got := filter(m, motion); got == nil {
+		t.Error("a motion message after the throttle window should pass through, got dropped (nil)")
+	}
+}
+
 func TestCommandPalette_TypeFilterAndExecute(t *testing.T) {
 	m := New("")
 	m.width, m.height = 100, 30
 
-	mi, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+	mi, _ := m.Update(tea.KeyPressMsg{Text: ":", Code: ':'})
 	m = mi.(Model)
 	if !m.inPalette {
 		t.Fatal("expected inPalette after ':'")
 	}
 
 	for _, r := range "sort" {
-		mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		mi, _ = m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
 		m = mi.(Model)
 	}
 	wasSortByDate := m.sortByDate
 
-	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	mi, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mi.(Model)
 	if m.inPalette {
 		t.Error("expected palette to close after executing a command")
@@ -245,10 +292,10 @@ func TestCommandPalette_TypeFilterAndExecute(t *testing.T) {
 func TestCommandPalette_EscCloses(t *testing.T) {
 	m := New("")
 	m.width, m.height = 100, 30
-	mi, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(":")})
+	mi, _ := m.Update(tea.KeyPressMsg{Text: ":", Code: ':'})
 	m = mi.(Model)
 
-	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mi, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = mi.(Model)
 	if m.inPalette {
 		t.Error("expected esc to close the palette")
@@ -258,7 +305,7 @@ func TestCommandPalette_EscCloses(t *testing.T) {
 func TestHelpOverlay_OpenScrollClose(t *testing.T) {
 	m := Model{width: 100, height: 30}
 
-	mi, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	mi, _ := m.Update(tea.KeyPressMsg{Text: "?", Code: '?'})
 	m = mi.(Model)
 	if m.view != viewHelp {
 		t.Fatalf("expected viewHelp after '?', got %v", m.view)
@@ -269,14 +316,14 @@ func TestHelpOverlay_OpenScrollClose(t *testing.T) {
 
 	before := m.helpVP.ScrollPercent()
 	for i := 0; i < 5; i++ {
-		mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		mi, _ = m.Update(tea.KeyPressMsg{Text: "j", Code: 'j'})
 		m = mi.(Model)
 	}
 	if m.helpVP.ScrollPercent() <= before {
 		t.Errorf("expected scroll to advance after pressing j, stayed at %v", before)
 	}
 
-	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mi, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = mi.(Model)
 	if m.view != viewList {
 		t.Errorf("expected esc to close help back to viewList, got %v", m.view)
@@ -348,16 +395,16 @@ func TestSearchMode_FiltersLiveAsUserTypes(t *testing.T) {
 	}
 	m.allNotes, m.notes = notes, notes
 
-	mi, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	mi, _ := m.Update(tea.KeyPressMsg{Text: "/", Code: '/'})
 	m = mi.(Model)
 	if !m.searching {
 		t.Fatal("expected '/' to enter search mode")
 	}
-	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	mi, _ = m.Update(tea.KeyPressMsg{Text: "b", Code: 'b'})
 	m = mi.(Model)
-	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	mi, _ = m.Update(tea.KeyPressMsg{Text: "g", Code: 'g'})
 	m = mi.(Model)
-	mi, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	mi, _ = m.Update(tea.KeyPressMsg{Text: "t", Code: 't'})
 	m = mi.(Model)
 
 	if len(m.notes) != 1 || m.notes[0].ID != "1" {
@@ -377,8 +424,6 @@ func TestFormatNoteRow_SelectedBackgroundSpansFullWidth(t *testing.T) {
 	// (same bug class found and fixed in mailctl). Confirmed empirically
 	// with a forced ANSI profile that the selected background did not
 	// extend past the date column. Now applied per-segment instead.
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	defer lipgloss.SetColorProfile(termenv.Ascii)
 
 	n := models.Note{Title: "hello", ModTime: time.Now()}
 	row := formatNoteRow(&n, 60, styleSelected, "")
@@ -391,7 +436,9 @@ func TestFormatNoteRow_SelectedBackgroundSpansFullWidth(t *testing.T) {
 	if lastOpen == -1 {
 		t.Fatal("expected to find the selected style's escape code in the row at all")
 	}
-	after := strings.TrimSuffix(row[lastOpen+len(openCode):], "\x1b[0m")
+	// lipgloss v2 emits "\x1b[m" (no "0") for a reset, not v1's "\x1b[0m".
+	after := strings.TrimSuffix(row[lastOpen+len(openCode):], "\x1b[m")
+	after = strings.TrimSuffix(after, "\x1b[0m")
 	if after == "" {
 		t.Error("expected trailing padding spaces after the last styled segment")
 	}
@@ -419,6 +466,139 @@ func TestFormatNoteRow_LongFolderNeverOverflowsWidth(t *testing.T) {
 		row := formatNoteRow(&n, w, styleSelected, "")
 		if got := lipgloss.Width(row); got != w {
 			t.Errorf("width %d: expected rendered row to be exactly %d columns, got %d", w, w, got)
+		}
+	}
+}
+
+// Regression test for a real, live-reproduced bug: formatNoteRow briefly
+// truncated/padded using two different width measurements — a conservative
+// one (assuming an East-Asian "Ambiguous width" rune like an em dash, en
+// dash, or middle dot might render one column wider than measured) for
+// truncation, but the plain, narrower one for the trailing pad-to-width
+// step. A row's actual on-screen width then silently depended on whether
+// its title happened to contain such a rune — this user's vault is full of
+// them (e.g. "Baby-Checkliste — Geburt") — so two rows "padded to the same
+// width" landed at different real columns, and the two-pane "│" divider
+// came out jagged instead of a straight line. formatNoteRow now measures
+// consistently throughout (see its own doc comment), which this pins: a
+// row with an ambiguous-width rune in its title/folder/tag must render at
+// the exact same width as one without, for the same input width.
+func TestFormatNoteRow_ConsistentWidthRegardlessOfAmbiguousRunes(t *testing.T) {
+	withDash := models.Note{
+		Title:   "Baby-Checkliste — Geburt ca. 28.12.2026 (Graz)",
+		Folder:  "Change-Management/KI",
+		Tags:    []string{"Papamonat–Fristen"},
+		ModTime: time.Now(),
+	}
+	plain := models.Note{
+		Title:   "Plain Title No Ambiguous Runes Here",
+		Folder:  "Change-Management/KI",
+		Tags:    []string{"PapamonatFristen"},
+		ModTime: time.Now(),
+	}
+	for _, w := range []int{40, 60, 100} {
+		gotDash := lipgloss.Width(formatNoteRow(&withDash, w, styleSelected, ""))
+		gotPlain := lipgloss.Width(formatNoteRow(&plain, w, styleSelected, ""))
+		if gotDash != w {
+			t.Errorf("width %d: row with ambiguous-width runes rendered at %d columns, want exactly %d", w, gotDash, w)
+		}
+		if gotPlain != w {
+			t.Errorf("width %d: plain row rendered at %d columns, want exactly %d", w, gotPlain, w)
+		}
+	}
+}
+
+// Comprehensive sweep, not one reported case: renders the full chrome
+// (renderList — every line, both row 1 and row 2) across every tab
+// position and a realistic width range, matching the real folder/note
+// shape this bug kept resurfacing against one call site at a time
+// (formatNoteRow, then renderTabRow1's sync suffix, then its scroll
+// indicators) — each fix closed one overflow source, but the underlying
+// symptom (a tab/notebook row duplicating and staying stuck, borders
+// broken) kept recurring on a plain notebook switch, no ambiguous-width
+// characters or long sync text required. This checks every rendered
+// line's width directly instead of one function's return value at a time,
+// so any next remaining unaccounted-for source shows up as a test failure
+// instead of another live repro.
+func TestRenderList_NoLineEverOverflowsWidth(t *testing.T) {
+	m := New("")
+	m.loading = false
+	m.topFolders = []string{"Baby", "Change-Management", "Linux"}
+	m.subFolders = map[string][]string{
+		"Change-Management": {"Change-Management/KI"},
+	}
+	m.folderCounts = map[string]int{
+		"":                     69,
+		"Baby":                 7,
+		"Change-Management":    10,
+		"Change-Management/KI": 1,
+		"Linux":                1,
+	}
+	m.lastSynced = time.Now().Add(-10 * time.Minute)
+	now := time.Now()
+	titles := []string{
+		"HyDE/Hyprland-Setup Shortcuts",
+		"Baby-Checkliste — Geburt ca. 28.12.2026 (Graz)",
+		"Lern- und Abgabeplan MBA Change Management",
+		"Papamonat & Familienzeitbonus – Fristen & Vorlagen",
+		"Kinderwagen-Vergleich: Nuna · Cybex",
+	}
+	for i, title := range titles {
+		m.allNotes = append(m.allNotes, models.Note{
+			ID:      title,
+			Title:   title,
+			Folder:  "Linux",
+			ModTime: now.Add(-time.Duration(i) * time.Hour),
+		})
+	}
+	m.notes = m.allNotes
+	m.setExpanded(1, true) // "Change-Management" expanded, shows row 2
+
+	n := len(m.tabPositions())
+	// Starts at 80: renderHelpBar's two key-list lines are static, hardcoded
+	// text with no width-based truncation at all (a separate, pre-existing,
+	// narrow-terminal-only limitation, not what's under test here) and
+	// already overflow on their own below that regardless of anything this
+	// test varies.
+	for width := 80; width <= 160; width++ {
+		m.width = width
+		m.height = 40
+		for cursor := 0; cursor < n; cursor++ {
+			m.tabCursor = cursor
+			m.ensureTabVisible()
+			out := m.renderList()
+			for i, line := range strings.Split(out, "\n") {
+				if got := lipgloss.Width(line); got > width {
+					t.Fatalf("width=%d tabCursor=%d line %d: renders at %d columns, exceeds width %d: %q",
+						width, cursor, i, got, width, line)
+				}
+			}
+		}
+	}
+}
+
+// Regression test for a real, live-reproduced bug: every render path here
+// deliberately fills its height budget exactly (listHeight/preambleRows/
+// helpBarHeight sum to precisely m.height by design), and View() never
+// ends in a trailing newline. That combination — output with exactly as
+// many lines as the terminal, no trailing newline — is a long-standing,
+// still-open bubbletea quirk (charmbracelet/bubbletea#304, aka #1004): the
+// renderer can fail to fully redraw or misplace the last line right at
+// that exact-height boundary, independent of the content. This is almost
+// certainly why the width-overflow fixes above (formatNoteRow,
+// renderTabRow1's suffix and scroll indicators, renderHelpBar's cursor
+// position) didn't resolve the live reports on their own — the actual
+// trigger was structural (hitting msg.Height exactly on every single
+// resize), not any one line's content. The WindowSizeMsg handler now
+// reserves one row of slack so m.height itself never equals the real
+// terminal height; this pins that it actually does.
+func TestWindowSizeMsg_NeverSetsHeightToRealTerminalHeight(t *testing.T) {
+	m := New("")
+	for _, h := range []int{10, 24, 40, 50, 100} {
+		mi, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: h})
+		m = mi.(Model)
+		if m.height >= h {
+			t.Errorf("WindowSizeMsg{Height: %d}: m.height = %d, want strictly less than the real terminal height", h, m.height)
 		}
 	}
 }
@@ -549,7 +729,7 @@ func TestFullAppWalk_TabTreeNeverCollapsesMidWalk(t *testing.T) {
 
 	n := len(m.tabPositions())
 	for step := 0; step < n; step++ {
-		mi, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		mi, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		m = drainCmd(t, mi.(Model), cmd)
 		if len(m.topFolders) != wantTops {
 			t.Fatalf("forward step %d (tabCursor=%d): len(topFolders) = %d, want %d — tab tree collapsed mid-walk: %v",
@@ -558,7 +738,7 @@ func TestFullAppWalk_TabTreeNeverCollapsesMidWalk(t *testing.T) {
 		assertNotesMatchActiveTab(t, m, "forward", step)
 	}
 	for step := 0; step < n; step++ {
-		mi, cmd := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		mi, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 		m = drainCmd(t, mi.(Model), cmd)
 		if len(m.topFolders) != wantTops {
 			t.Fatalf("backward step %d (tabCursor=%d): len(topFolders) = %d, want %d — tab tree collapsed mid-walk: %v",
@@ -590,8 +770,6 @@ func assertNotesMatchActiveTab(t *testing.T, m Model, dir string, step int) {
 }
 
 func TestHighlightMatches_ColorsOnlyMatchedRunes(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	defer lipgloss.SetColorProfile(termenv.Ascii)
 
 	idxs := fuzzyMatchIndexes("bgt", "budgetctl")
 	if idxs == nil {

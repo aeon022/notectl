@@ -115,7 +115,7 @@ func (m Model) moveEditorCursorTo(clickRow, clickX int) Model {
 	for guard := 0; m.bodyArea.Line() > logical && guard < 10000; guard++ {
 		m.bodyArea.CursorUp()
 	}
-	m.bodyArea.SetCursor(startCol + col)
+	m.bodyArea.SetCursorColumn(startCol + col)
 	m.bodyArea, _ = m.bodyArea.Update(editorSyncMsg{})
 	m.syncEditorScroll()
 	return m

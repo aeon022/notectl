@@ -16,7 +16,7 @@ func editorModel(body string, w, h int) Model {
 	for m.bodyArea.Line() > 0 {
 		m.bodyArea.CursorUp()
 	}
-	m.bodyArea.SetCursor(0)
+	m.bodyArea.SetCursorColumn(0)
 	return m
 }
 

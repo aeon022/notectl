@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/aeon022/missionctl-core/humanize"
 	"github.com/aeon022/notectl/internal/store"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -583,12 +583,45 @@ func tabWindow(labels []string, activeIdx, scroll, w int) (start, end int) {
 	return newScroll, growForward(labels, activeIdx, newScroll, w)
 }
 
+// tabRow1Suffix is row 1's trailing sync-status text ("  syncing…" or
+// "  synced 3m ago") — split out so both renderTabRow1 and ensureTabVisible
+// budget the same width for it. It used to be appended after tabWindow had
+// already filled the row with as many tabs as fit *w*, with nothing held
+// back for it — whenever the tabs alone came close to w, the suffix pushed
+// the whole row past it and overflowed. Worse, its length changes on its
+// own as time passes ("synced 9m ago" -> "synced 10m ago") or a sync
+// finishes ("syncing…" -> "synced just now"), independent of any tab or
+// terminal-size change, so the row could silently start overflowing on a
+// completely idle screen. Once it wrapped in the real terminal, the next
+// redraw overwrote the wrong physical row underneath it — reported live as
+// two different "synced ... ago" timestamps visible stacked on screen at
+// once, staying that way until the next full relaunch.
+func (m Model) tabRow1Suffix() string {
+	if m.syncing {
+		return "  " + m.sp.View() + styleSyncing.Render(" syncing…")
+	}
+	if !m.lastSynced.IsZero() {
+		return "  " + styleMuted.Render("synced "+humanize.TimeAgo(m.lastSynced))
+	}
+	return ""
+}
+
+// scrollIndicatorMargin is the worst-case extra width row 1's "‹"/"›"
+// scroll indicators can add on top of whatever tabWindow decided fits —
+// each costs 1 column for the glyph plus 2 for the "  " strings.Join
+// separator it introduces as an extra part (3), and both can appear at
+// once (start > 0 *and* more tabs past the end). growForward/tabWindow
+// pick which tabs fit *before* either indicator is known to be needed, so
+// that decision has to reserve for the worst case up front rather than
+// find out afterward that adding one pushed the row over.
+const scrollIndicatorMargin = 6
+
 // ensureTabVisible reclamps m.tabScroll so the active top-level tab is
 // within the rendered window at the current terminal width — called
 // whenever the tab cursor or the terminal width changes.
 func (m *Model) ensureTabVisible() {
 	labels := m.topLabels()
-	w := m.width - 1
+	w := m.width - 1 - lipgloss.Width(m.tabRow1Suffix()) - scrollIndicatorMargin
 	if w < 1 {
 		w = 1
 	}
@@ -599,7 +632,25 @@ func (m *Model) ensureTabVisible() {
 func (m Model) renderTabRow1(w int) string {
 	labels := m.topLabels()
 	pos := m.currentPos()
-	start, end := tabWindow(labels, pos.top, m.tabScroll, w)
+
+	// Reserve room for the trailing sync-status suffix and the possible
+	// "‹"/"›" scroll indicators before deciding how many tabs fit — see
+	// tabRow1Suffix's doc comment and scrollIndicatorMargin. Drop the
+	// suffix entirely rather than let it overflow if there's barely room
+	// for tabs at all.
+	suffix := m.tabRow1Suffix()
+	tabsW := w - lipgloss.Width(suffix) - scrollIndicatorMargin
+	if tabsW < 10 {
+		// Not enough room for tabs and the suffix together — drop the
+		// suffix, but still reserve for the scroll indicators.
+		suffix = ""
+		tabsW = w - scrollIndicatorMargin
+		if tabsW < 1 {
+			tabsW = 1
+		}
+	}
+
+	start, end := tabWindow(labels, pos.top, m.tabScroll, tabsW)
 	var parts []string
 	if start > 0 {
 		parts = append(parts, styleMuted.Render("‹"))
@@ -619,13 +670,7 @@ func (m Model) renderTabRow1(w int) string {
 	if end < len(labels) {
 		parts = append(parts, styleMuted.Render("›"))
 	}
-	bar := strings.Join(parts, "  ")
-	if m.syncing {
-		bar += "  " + m.sp.View() + styleSyncing.Render(" syncing…")
-	} else if !m.lastSynced.IsZero() {
-		bar += "  " + styleMuted.Render("synced "+humanize.TimeAgo(m.lastSynced))
-	}
-	return bar
+	return strings.Join(parts, "  ") + suffix
 }
 
 // subTabPrefix renders the "<Parent> › " lead-in that opens row 2 — naming

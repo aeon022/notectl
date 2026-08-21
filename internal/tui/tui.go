@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"image/color"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -10,6 +12,12 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/aeon022/missionctl-core/keymap"
 	"github.com/aeon022/missionctl-core/lastsync"
 	"github.com/aeon022/missionctl-core/overlay"
@@ -22,12 +30,6 @@ import (
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/aeon022/notectl/internal/syncdispatch"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"github.com/muesli/reflow/wrap"
 	"github.com/sahilm/fuzzy"
@@ -49,15 +51,31 @@ const (
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
+// isDarkBG is resolved once at package load — lipgloss v2 dropped
+// AdaptiveColor (a static Light/Dark struct lipgloss itself resolved
+// internally) in favor of a LightDarkFunc meant to be re-resolved against a
+// live tea.BackgroundColorMsg on every render. This app builds all its
+// styles once, at package load, same as before v2 — adaptiveColor below is
+// the one-shot equivalent of what AdaptiveColor did implicitly.
+var isDarkBG = lipgloss.HasDarkBackground(os.Stdin, os.Stdout)
+
+// adaptiveColor picks light or dark once, at package load — see isDarkBG.
+func adaptiveColor(light, dark string) color.Color {
+	if isDarkBG {
+		return lipgloss.Color(dark)
+	}
+	return lipgloss.Color(light)
+}
+
 var (
 	// Shared across the suite via missionctl-core/theme.
-	colorBlue   = theme.Blue
-	colorGreen  = theme.Green
-	colorRed    = theme.Red
-	colorMuted  = theme.Muted
-	colorSubtle = theme.Subtle
-	colorAmber  = theme.Amber
-	colorTabBg  = lipgloss.AdaptiveColor{Light: "252", Dark: "235"}
+	colorBlue   = theme.BlueV2
+	colorGreen  = theme.GreenV2
+	colorRed    = theme.RedV2
+	colorMuted  = theme.MutedV2
+	colorSubtle = theme.SubtleV2
+	colorAmber  = theme.AmberV2
+	colorTabBg  = adaptiveColor("252", "235")
 
 	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
 	styleDivider  = lipgloss.NewStyle().Foreground(colorSubtle)
@@ -67,20 +85,20 @@ var (
 	styleMuted    = lipgloss.NewStyle().Foreground(colorMuted)
 	styleBold     = lipgloss.NewStyle().Bold(true)
 	styleSelected = lipgloss.NewStyle().
-			Background(theme.SelectedBg).
-			Foreground(theme.SelectedFg).
+			Background(theme.SelectedBgV2).
+			Foreground(theme.SelectedFgV2).
 			Bold(true)
-	styleTag     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "33", Dark: "75"})
-	styleFolder  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "136", Dark: "178"})
+	styleTag     = lipgloss.NewStyle().Foreground(adaptiveColor("33", "75"))
+	styleFolder  = lipgloss.NewStyle().Foreground(adaptiveColor("136", "178"))
 	styleLabel   = lipgloss.NewStyle().Foreground(colorBlue).Width(9)
-	styleSyncing = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"})
+	styleSyncing = lipgloss.NewStyle().Foreground(adaptiveColor("214", "220"))
 
 	styleTabActive = lipgloss.NewStyle().Bold(true).
-			Foreground(theme.OnAccent).
+			Foreground(theme.OnAccentV2).
 			Background(colorBlue).
 			Padding(0, 1)
 	styleTabInact = lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "237", Dark: "252"}).
+			Foreground(adaptiveColor("237", "252")).
 			Background(colorTabBg).
 			Padding(0, 1)
 	// styleTabActiveDim marks the row-1 tab whose sub-notebook is active in
@@ -94,21 +112,21 @@ var (
 	// its contents change with every parent and read better as a
 	// lightweight breadcrumb than another row of buttons.
 	styleTabParentRef = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleSubInact     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "241", Dark: "249"})
+	styleSubInact     = lipgloss.NewStyle().Foreground(adaptiveColor("241", "249"))
 	styleSubActive    = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(colorBlue)
 
 	// markdown
 	styleMDH1    = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleMDH2    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "26", Dark: "39"})
+	styleMDH2    = lipgloss.NewStyle().Bold(true).Foreground(adaptiveColor("26", "39"))
 	styleMDH3    = lipgloss.NewStyle().Bold(true)
 	styleMDQuote = lipgloss.NewStyle().Foreground(colorMuted)
-	styleMDCode  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "130", Dark: "215"})
+	styleMDCode  = lipgloss.NewStyle().Foreground(adaptiveColor("130", "215"))
 	styleMDBold  = lipgloss.NewStyle().Bold(true)
 	styleStrike  = lipgloss.NewStyle().Strikethrough(true).Foreground(colorMuted)
 
 	// date age colors — amber for today (matches mailctl styleToday), fading to subtle
-	styleDateToday = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "214", Dark: "220"}).Bold(true)
-	styleDateWeek  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "243", Dark: "246"})
+	styleDateToday = lipgloss.NewStyle().Foreground(adaptiveColor("214", "220")).Bold(true)
+	styleDateWeek  = lipgloss.NewStyle().Foreground(adaptiveColor("243", "246"))
 	styleDateMonth = lipgloss.NewStyle().Foreground(colorMuted)
 	styleDateOld   = lipgloss.NewStyle().Foreground(colorSubtle)
 )
@@ -303,7 +321,7 @@ type Model struct {
 
 	// undo: "u" within undoWindow of a delete restores the deleted note —
 	// same pattern and window taskctl uses for its own delete-undo.
-	// statusTime doubles as its expiry clock (see the tea.KeyMsg case).
+	// statusTime doubles as its expiry clock (see the tea.KeyPressMsg case).
 	lastDeleted *models.Note
 
 	// status
@@ -431,15 +449,65 @@ func (m Model) saveUIState() {
 	})
 }
 
+// motionThrottleFilter drops MouseActionMotion messages that arrive less
+// than 16ms after the last one that was let through, capping how often a
+// mouse-motion event alone can trigger a full render (~60/s) — everything
+// else (keys, clicks, resize, all the async load/sync messages) always
+// passes through untouched. Bubble Tea calls model.View() and writes a
+// render for every single message it receives regardless of whether Update
+// actually changed anything (see its eventLoop), and WithMouseAllMotion
+// reports every pixel of movement, not just cell-boundary crossings — on a
+// fast trackpad that's dozens of renders a second from hovering alone, on
+// top of whatever the mouse happened to be doing at the time. Confirmed
+// live: adding an artificial per-render delay (temporary debug file
+// logging on every View() call) made the reported corruption — a
+// tab/header row duplicating and staying stuck — stop reproducing, which
+// points at render-rate/timing rather than anything in the rendered
+// content itself (already-generated frames logged during a live repro
+// were byte-for-byte correct, single header, single footer, right line
+// count throughout). This is the deliberate, permanent version of that
+// same effect: no logging or working-model dependency, no per-message
+// state that needs to live on Model, just backpressure at the one message
+// type that can flood without bound. A closure-captured timestamp is safe
+// here without extra locking — Bubble Tea's event loop calls this filter
+// synchronously from a single goroutine, one message at a time.
+func motionThrottleFilter() func(tea.Model, tea.Msg) tea.Msg {
+	var lastMotion time.Time
+	return func(_ tea.Model, msg tea.Msg) tea.Msg {
+		if _, ok := msg.(tea.MouseMotionMsg); !ok {
+			return msg
+		}
+		now := time.Now()
+		if now.Sub(lastMotion) < 16*time.Millisecond {
+			return nil
+		}
+		lastMotion = now
+		return msg
+	}
+}
+
 func Run(openPath string) error {
 	m := New(openPath)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// WithFPS(30), not the 60 default: confirmed live that the reported
+	// corruption (a tab/header row duplicating and staying stuck) stops
+	// reproducing whenever *anything* slows down how fast frames reach the
+	// terminal — a debug-logging delay on every View() call, then running
+	// through `script`'s pty relay, both masked it with no notectl code
+	// changes at all. That points at the real terminal not keeping up with
+	// how fast Bubble Tea's default 60fps ticker can write full-screen,
+	// heavily-styled frames — not at anything wrong with the frames
+	// themselves (already confirmed byte-for-byte correct throughout a
+	// live repro via the debug log). A static notes browser has nothing
+	// that benefits from 60fps in the first place; halving it gives the
+	// terminal the same breathing room those workarounds did, permanently,
+	// without depending on external wrapping.
+	p := tea.NewProgram(m, tea.WithFilter(motionThrottleFilter()), tea.WithFPS(30))
 	_, err := p.Run()
 	return err
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadNotesCmd("", "", ""), doSyncCmd(), tea.WindowSize(), m.sp.Tick, loadLastSyncedCmd())
+	return tea.Batch(loadNotesCmd("", "", ""), doSyncCmd(), tea.RequestWindowSize, m.sp.Tick, loadLastSyncedCmd())
 }
 
 type lastSyncedLoadedMsg struct{ t time.Time }
@@ -507,9 +575,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.height = msg.Height
-		m.vp = viewport.New(msg.Width, m.bodyHeight())
-		m.pvp = viewport.New(m.pvpWidth(), m.height-3)
+		// -1, not msg.Height: every render path here fills its height
+		// budget exactly (listHeight/preambleRows/helpBarHeight sum to
+		// precisely m.height, by design, on every path), and View() never
+		// ends in a trailing newline (the conventional, recommended way to
+		// write it). That combination — output with exactly as many lines
+		// as the terminal, no trailing newline — is a long-standing,
+		// still-open bubbletea quirk (charmbracelet/bubbletea#304, aka
+		// #1004): the renderer can fail to fully redraw or misplace the
+		// last line specifically at that exact-height boundary, independent
+		// of what the content actually is. Reserving one row of slack here
+		// means notectl's own layout math never lands on that boundary,
+		// regardless of terminal size — cheaper and more reliable than
+		// trying to guarantee every render path never once produces a
+		// flush that happens to be exactly msg.Height lines.
+		m.height = msg.Height - 1
+		if m.height < 1 {
+			m.height = 1
+		}
+		m.vp = viewport.New(viewport.WithWidth(msg.Width), viewport.WithHeight(m.bodyHeight()))
+		m.pvp = viewport.New(viewport.WithWidth(m.pvpWidth()), viewport.WithHeight(m.height-3))
 		m.bodyArea.SetWidth(m.editorBodyWidth())
 		m.bodyArea.SetHeight(m.height - 11)
 		m.ensureTabVisible()
@@ -562,7 +647,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cursor, ok := m.resolveTabCursor(restore); ok {
 				m.tabCursor = cursor
 				m.ensureTabVisible()
-				return m, loadNotesCmd(m.effectiveAccount(), restore, m.activeAccount())
+				return m, tea.Batch(loadNotesCmd(m.effectiveAccount(), restore, m.activeAccount()), tea.ClearScreen)
 			}
 		}
 		// Try to restore cursor to the same note by ID.
@@ -586,7 +671,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					var cmd tea.Cmd
 					m, cmd = m.openNoteDetail(n)
 					m.openPath = ""
-					return m, cmd
+					return m, tea.Batch(cmd, tea.ClearScreen)
 				}
 			}
 		}
@@ -596,7 +681,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.applySortOrder()
 		var pvCmd tea.Cmd
 		m, pvCmd = m.refreshPreview()
-		return m, pvCmd
+		// tea.ClearScreen, not just pvCmd: a reload here can change the
+		// notebook tree (account line, row 2's presence) and so the total
+		// number of chrome lines above the list — a shape change nothing
+		// else forces a full repaint for (unlike a resize, which Bubble
+		// Tea already repaints on its own). Without it, the renderer's
+		// line-by-line diff can skip a row whose content coincidentally
+		// still matches what used to be at that same index before the
+		// shape changed, leaving it stale while everything around it
+		// updates — reported live as a note's old title/preview lingering
+		// above the new one, or the header/divider vanishing right after a
+		// sync landed.
+		return m, tea.Batch(pvCmd, tea.ClearScreen)
 
 	case lastSyncedLoadedMsg:
 		m.lastSynced = msg.t
@@ -687,8 +783,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.detailBlocks = blocks
 				content, visualCursor := renderDetailBody(body, m.detailLineCursor, m.detailBodyWidth())
 				// Adjust offset if cursor went off screen due to length change
-				if visualCursor >= m.detailYOffset+m.vp.Height {
-					m.detailYOffset = visualCursor - m.vp.Height + 1
+				if visualCursor >= m.detailYOffset+m.vp.Height() {
+					m.detailYOffset = visualCursor - m.vp.Height() + 1
 				}
 				m.vp.SetContent(content)
 				m.vp.SetYOffset(m.detailYOffset)
@@ -719,9 +815,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 
-	case tea.MouseMsg:
+	case tea.MouseWheelMsg:
 		switch msg.Button {
-		case tea.MouseButtonWheelUp:
+		case tea.MouseWheelUp:
 			if m.view == viewList {
 				if m.cursor > 0 {
 					m.cursor--
@@ -737,7 +833,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.view == viewNew && m.newFocus == 2 {
 				return m.scrollEditor(-3), nil
 			}
-		case tea.MouseButtonWheelDown:
+		case tea.MouseWheelDown:
 			if m.view == viewList {
 				if m.cursor < len(m.notes)-1 {
 					m.cursor++
@@ -754,60 +850,65 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.view == viewNew && m.newFocus == 2 {
 				return m.scrollEditor(3), nil
 			}
-		case tea.MouseButtonLeft:
-			if m.view == viewNew && msg.Action == tea.MouseActionPress {
-				return m.handleEditorClick(msg.X, msg.Y), nil
+		}
+
+	case tea.MouseClickMsg:
+		if msg.Button != tea.MouseLeft {
+			return m, nil
+		}
+		if m.view == viewNew {
+			return m.handleEditorClick(msg.X, msg.Y), nil
+		}
+		if m.view != viewList {
+			return m, nil
+		}
+		if row, i := m.tabHitTest(msg.X, msg.Y); row >= 0 {
+			var newCursor int
+			if row == 0 {
+				newCursor = m.cursorFor(i, -1)
+			} else {
+				newCursor = m.cursorFor(m.currentPos().top, i)
 			}
-			if m.view != viewList || msg.Action != tea.MouseActionPress {
-				return m, nil
+			if newCursor != m.tabCursor {
+				m.tabCursor = newCursor
+				m.ensureTabVisible()
+				m.cursor = 0
+				m.saveUIState()
+				return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 			}
-			if row, i := m.tabHitTest(msg.X, msg.Y); row >= 0 {
-				var newCursor int
-				if row == 0 {
-					newCursor = m.cursorFor(i, -1)
-				} else {
-					newCursor = m.cursorFor(m.currentPos().top, i)
-				}
-				if newCursor != m.tabCursor {
-					m.tabCursor = newCursor
-					m.ensureTabVisible()
-					m.cursor = 0
-					m.saveUIState()
-					return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
-				}
-				return m, nil
-			}
-			if i := m.rowHitTest(msg.X, msg.Y); i >= 0 {
-				now := time.Now()
-				if i == m.lastClickRow && now.Sub(m.lastClickAt) < doubleClickWindow {
-					m.cursor = i
-					m.lastClickRow = -1 // consumed, so a third click starts fresh
-					n := m.notes[i]
-					m.detail = &n
-					m.detailBlocks = nil
-					m.detailLineCursor = 0
-					m.detailYOffset = 0
-					m.vp.GotoTop()
-					m.view = viewDetail
-					if config.Source() == config.SourceApple {
-						m.vp.SetContent(styleMuted.Render("Loading…"))
-						return m, loadAppleBodyCmd(n.ID)
-					}
-					content, _ := renderDetailBody(n.Body, 0, m.detailBodyWidth())
-					m.vp.SetContent(content)
-					return m, nil
-				}
+			return m, nil
+		}
+		if i := m.rowHitTest(msg.X, msg.Y); i >= 0 {
+			now := time.Now()
+			if i == m.lastClickRow && now.Sub(m.lastClickAt) < doubleClickWindow {
 				m.cursor = i
-				m.lastClickRow = i
-				m.lastClickAt = now
-				var cmd tea.Cmd
-				m, cmd = m.refreshPreview()
-				return m, cmd
+				m.lastClickRow = -1 // consumed, so a third click starts fresh
+				n := m.notes[i]
+				m.detail = &n
+				m.detailBlocks = nil
+				m.detailLineCursor = 0
+				m.detailYOffset = 0
+				m.vp.GotoTop()
+				m.view = viewDetail
+				if config.Source() == config.SourceApple {
+					m.vp.SetContent(styleMuted.Render("Loading…"))
+					return m, loadAppleBodyCmd(n.ID)
+				}
+				content, _ := renderDetailBody(n.Body, 0, m.detailBodyWidth())
+				m.vp.SetContent(content)
+				return m, nil
 			}
-		case tea.MouseButtonNone:
-			if msg.Action == tea.MouseActionMotion && m.view == viewList {
-				m.hoverRow = m.rowHitTest(msg.X, msg.Y)
-			}
+			m.cursor = i
+			m.lastClickRow = i
+			m.lastClickAt = now
+			var cmd tea.Cmd
+			m, cmd = m.refreshPreview()
+			return m, cmd
+		}
+
+	case tea.MouseMotionMsg:
+		if m.view == viewList {
+			m.hoverRow = m.rowHitTest(msg.X, msg.Y)
 		}
 
 	case spinner.TickMsg:
@@ -818,7 +919,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		m.err = nil
 		// The delete-undo toast gets the longer undoWindow instead of the
 		// usual 3s — it's also the window "u" checks below, so the message
@@ -885,7 +986,7 @@ func (m Model) openNoteDetail(n models.Note) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.inPalette {
 		closePalette := func(mm Model) Model {
 			mm.inPalette = false
@@ -920,7 +1021,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			chosen := matches[m.paletteCursor]
 			m = closePalette(m)
-			replay := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(chosen.Key)}
+			replay := tea.KeyPressMsg{Text: chosen.Key, Code: []rune(chosen.Key)[0]}
 			return m.updateList(replay)
 		}
 		var cmd tea.Cmd
@@ -1274,7 +1375,7 @@ func (m Model) refreshPreview() (Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
 		m.view = viewList
@@ -1348,8 +1449,8 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if next := nextNonBlankLine(lines, m.detailLineCursor, 1); next != m.detailLineCursor {
 				m.detailLineCursor = next
 				content, visualCursor := renderDetailBody(m.detail.Body, m.detailLineCursor, m.detailBodyWidth())
-				if visualCursor >= m.detailYOffset+m.vp.Height {
-					m.detailYOffset = visualCursor - m.vp.Height + 1
+				if visualCursor >= m.detailYOffset+m.vp.Height() {
+					m.detailYOffset = visualCursor - m.vp.Height() + 1
 				}
 				m.vp.SetContent(content)
 				m.vp.SetYOffset(m.detailYOffset)
@@ -1373,13 +1474,13 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "pgdown", "ctrl+f":
 		if m.detail != nil {
 			lines := strings.Split(m.detail.Body, "\n")
-			m.detailLineCursor = min(len(lines)-1, m.detailLineCursor+max(1, m.vp.Height/2))
+			m.detailLineCursor = min(len(lines)-1, m.detailLineCursor+max(1, m.vp.Height()/2))
 			m = m.syncDetailViewport()
 		}
 
 	case "pgup", "ctrl+b":
 		if m.detail != nil {
-			m.detailLineCursor = max(0, m.detailLineCursor-max(1, m.vp.Height/2))
+			m.detailLineCursor = max(0, m.detailLineCursor-max(1, m.vp.Height()/2))
 			m = m.syncDetailViewport()
 		}
 
@@ -1421,8 +1522,8 @@ func (m Model) syncDetailViewport() Model {
 
 	if visualCursor < m.detailYOffset {
 		m.detailYOffset = visualCursor
-	} else if visualCursor >= m.detailYOffset+m.vp.Height {
-		m.detailYOffset = visualCursor - m.vp.Height + 1
+	} else if visualCursor >= m.detailYOffset+m.vp.Height() {
+		m.detailYOffset = visualCursor - m.vp.Height() + 1
 	}
 	if m.detailYOffset < 0 {
 		m.detailYOffset = 0
@@ -1433,7 +1534,7 @@ func (m Model) syncDetailViewport() Model {
 	return m
 }
 
-func (m Model) updateNew(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateNew(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s":
 		var id string
@@ -1510,7 +1611,7 @@ func allTags(notes []models.Note) []tagCount {
 	return out
 }
 
-func (m Model) updateTags(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateTags(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	tags := allTags(m.allNotes)
 	switch msg.String() {
 	case "ctrl+c":
@@ -1544,7 +1645,7 @@ func (m Model) updateTags(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // graph on the selected neighbor (one-hop traversal, chainable), "d" opens
 // that neighbor's full detail view, esc/q returns to wherever "L" was
 // pressed from.
-func (m Model) updateGraph(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateGraph(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	neighbors := m.graphNeighbors()
 	switch msg.String() {
 	case "ctrl+c":
@@ -1572,7 +1673,7 @@ func (m Model) updateGraph(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateSettings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+s":
 		return m, saveSettingsCmd(m.vaultInput.Value(), sourceTypes[m.sourceIdx].key)
@@ -1792,7 +1893,17 @@ func saveAppleBodyCmd(id, textBody string, detailBlocks []notes.Block) tea.Cmd {
 
 // ── View ──────────────────────────────────────────────────────────────────────
 
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	// v1's tea.WithAltScreen()/WithMouseAllMotion() Program options are
+	// gone in v2 — AltScreen/MouseMode are now per-View fields, set on
+	// every render instead of once at Program startup.
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeAllMotion
+	return v
+}
+
+func (m Model) viewContent() string {
 	switch m.view {
 	case viewDetail:
 		return m.renderDetail()
@@ -1926,7 +2037,7 @@ func (m Model) openHelp() Model {
 		popW = 40
 	}
 
-	vp := viewport.New(popW-6, popH-5) // border 1+1, padding(1,2) → 2 rows/4 cols; -1 row for footer
+	vp := viewport.New(viewport.WithWidth(popW-6), viewport.WithHeight(popH-5)) // border 1+1, padding(1,2) → 2 rows/4 cols; -1 row for footer
 	vp.SetContent(m.helpContent())
 
 	m.helpVP = vp
@@ -1941,7 +2052,7 @@ func (m Model) openHelp() Model {
 // the whole screen — the list stays visible around it.
 func (m Model) renderHelpPopup() string {
 	footer := "esc / ?  close"
-	if m.helpVP.TotalLineCount() > m.helpVP.Height {
+	if m.helpVP.TotalLineCount() > m.helpVP.Height() {
 		footer = fmt.Sprintf("j/k scroll (%d%%)  ·  %s", int(m.helpVP.ScrollPercent()*100), footer)
 	}
 	body := m.helpVP.View() + "\n" + styleHelp.Render(footer)
@@ -2026,6 +2137,9 @@ func (m Model) renderSinglePane() string {
 		end := min(len(lines), start+listH)
 		for _, l := range lines[start:end] {
 			b.WriteString(l + "\n")
+		}
+		for i := end - start; i < listH; i++ {
+			b.WriteString("\n")
 		}
 	}
 
@@ -2153,7 +2267,7 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 		case i == m.cursor:
 			rowStyle = styleSelected
 		case i == m.hoverRow:
-			rowStyle = theme.Hover
+			rowStyle = theme.HoverV2
 		}
 		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ))
 		lineToNote = append(lineToNote, i)
@@ -2170,7 +2284,7 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 				case i == m.cursor:
 					pLine = styleSelected.Width(w).Render(pLine)
 				case i == m.hoverRow:
-					pLine = theme.Hover.Width(w).Render(pLine)
+					pLine = theme.HoverV2.Width(w).Render(pLine)
 				default:
 					pLine = styleMuted.Render(pLine)
 				}
@@ -2327,9 +2441,23 @@ func (m Model) renderHelpBar(w int) string {
 	}
 	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  u:undo  y:copy  S:sort  H:hide empty")
 	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:notebook  l/h:expand  ?:help  q:quit")
+
+	// right's own length isn't fixed — cursor position and note count both
+	// change digit count as you move around or switch notebooks — and used
+	// to get appended after line2 unconditionally, with pad only ever
+	// clamped to a minimum of 0 rather than dropping right when there was
+	// no room left for it. On this bottom row that overflow is worse than
+	// elsewhere: a wrap here can make the terminal itself scroll, dragging
+	// everything above it out of alignment along with it (reported live as
+	// tab-row duplication and shifted borders right after a notebook
+	// switch changed the note count).
 	pad := w - lipgloss.Width(line2) - lipgloss.Width(right)
 	if pad < 0 {
-		pad = 0
+		right = ""
+		pad = w - lipgloss.Width(line2)
+		if pad < 0 {
+			pad = 0
+		}
 	}
 	return line1 + "\n" + line2 + strings.Repeat(" ", pad) + right
 }
@@ -2373,11 +2501,11 @@ func (m Model) renderDetail() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
-	m.vp.Width = m.detailBodyWidth()
-	m.vp.Height = m.bodyHeight()
+	m.vp.SetWidth(m.detailBodyWidth())
+	m.vp.SetHeight(m.bodyHeight())
 	b.WriteString(renderScrollbar(m.vp, detailLeftPad))
 	pct := ""
-	if m.vp.TotalLineCount() > m.vp.Height {
+	if m.vp.TotalLineCount() > m.vp.Height() {
 		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
 	}
 	helpStr := "esc:back  e:edit  d:delete  o:notes  L:link graph  j/k:scroll  space:toggle checkbox  q:quit"
@@ -2443,7 +2571,7 @@ func (m Model) graphNeighbors() []models.Note {
 func renderScrollbar(vp viewport.Model, leftPad string) string {
 	content := vp.View()
 	lines := strings.Split(content, "\n")
-	h := vp.Height
+	h := vp.Height()
 	if h <= 0 {
 		h = len(lines)
 	}
@@ -3431,6 +3559,21 @@ func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query str
 	// `width` altogether, since nothing here ever shrank meta back down.
 	// That overflow broke the two-pane divider's alignment (row + " │ " +
 	// preview) once row exceeded its column budget.
+	// Truncation and padding both measure with the same yardstick
+	// (runewidth/lipgloss.Width) throughout this function, deliberately —
+	// an earlier version truncated conservatively (assuming an ambiguous-
+	// width rune like a dash might render one column wider than measured,
+	// see pessimisticWidth) but then padded against the plain, narrower
+	// measurement. That mismatch meant a row's actual on-screen width
+	// silently depended on whether its title happened to contain such a
+	// rune — most did — so two rows padded to the "same" width landed at
+	// different real columns, and the two-pane "│" divider came out jagged
+	// instead of a straight line (reported live, and worse in practice
+	// than the theoretical overflow the mismatch was trying to prevent).
+	// Consistent measurement can't simultaneously guarantee zero overflow
+	// on a terminal that renders such a rune wide — but it does guarantee
+	// every row lands at the exact same column, which is what actually
+	// matters here.
 	meta := "" // independent colors (folder/tag), unaffected by rowStyle
 	metaBudget := width - 16 - 6
 	if n.Folder != "" && metaBudget > 1 {
@@ -3598,4 +3741,3 @@ func sameDay(a, b time.Time) bool {
 	by, bm, bd := b.Date()
 	return ay == by && am == bm && ad == bd
 }
-

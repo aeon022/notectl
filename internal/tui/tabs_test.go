@@ -3,9 +3,10 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/aeon022/notectl/internal/store"
-	"github.com/mattn/go-runewidth"
 )
 
 func TestHasMultipleAccounts(t *testing.T) {
@@ -107,7 +108,7 @@ func TestRenderAccountLine_NamesBoundAccountAndNeverExceedsWidth(t *testing.T) {
 	}
 	for _, w := range []int{4, 10, 20, 40, 60, 100} {
 		line := m.renderAccountLine(w)
-		if got := runewidth.StringWidth(line); got > w {
+		if got := lipgloss.Width(line); got > w {
 			t.Errorf("width %d: line %q rendered at %d columns, exceeds width", w, line, got)
 		}
 	}
@@ -313,6 +314,91 @@ func TestTabWindow_SingleStepNeverEvictsMoreThanOneTab(t *testing.T) {
 			}
 			m.tabScroll = start
 			m.tabCursor = (m.tabCursor + 1) % n
+		}
+	}
+}
+
+// Regression test for a real, live-reproduced bug: row-1 and row-2 tab
+// labels are folder names — free-form user text — measured via tabWidth,
+// padTabLabel, topFolderLabel, and renderTabRow2's fit loop. All of those
+// measure consistently (lipgloss.Width/runewidth throughout, deliberately —
+// see padTabLabel's history: an earlier version truncated conservatively
+// but padded against a narrower measurement, which meant a tab's actual
+// on-screen width silently depended on whether its folder name happened to
+// contain an em/en dash or similar rune, breaking row1TabWidth's uniform-
+// width invariant and misaligning tab to tab). This pins that row 1 and
+// row 2 both stay within width regardless of such runes in the folder
+// names, at a realistic width range.
+func TestTabRows_AmbiguousWidthNeverOverflows(t *testing.T) {
+	m := Model{
+		topFolders: []string{"Notizen — Archiv", "Baby", "Change-Management"},
+		subFolders: map[string][]string{
+			"Change-Management": {"Change-Management/KI – Prompts", "Change-Management/Alt"},
+		},
+	}
+	m.setExpanded(2, true)
+	m.tabCursor = 3 // {top:3,sub:-1} -> "Change-Management", the expanded parent
+
+	// Starts well above row1TabWidth (20): both growForward (row 1) and
+	// renderTabRow2's own fit loop always show at least one label even if
+	// that label alone overflows w (by design, so a very narrow terminal
+	// still shows something clickable) — a separate, pre-existing edge
+	// case this test isn't after.
+	for width := 60; width <= 200; width++ {
+		m.width = width
+		m.ensureTabVisible()
+		if row := m.renderTabRow1(width - 1); lipgloss.Width(row) > width-1 {
+			t.Fatalf("width=%d: row1 renders at %d columns, exceeds budget %d: %q",
+				width, lipgloss.Width(row), width-1, row)
+		}
+		if row := m.renderTabRow2(width - 1); lipgloss.Width(row) > width-1 {
+			t.Fatalf("width=%d: row2 renders at %d columns, exceeds budget %d: %q",
+				width, lipgloss.Width(row), width-1, row)
+		}
+	}
+}
+
+// Regression test for a real, live-reproduced bug: renderTabRow1 used to
+// append the trailing sync-status suffix ("  syncing…" / "  synced 3m
+// ago") *after* tabWindow had already filled the row with as many tabs as
+// fit w, with no width reserved for the suffix at all. Whenever the
+// visible tabs already came close to w — four or five real notebooks is
+// enough — the suffix pushed the whole row past it and silently
+// overflowed, independent of any tab switch or resize: the suffix's own
+// length changes on its own as time passes ("9m ago" -> "10m ago") or a
+// sync finishes ("syncing…" -> "synced just now"). Once it wrapped in the
+// real terminal, the next redraw overwrote the wrong physical row
+// underneath — reported live as two different "synced ... ago" timestamps
+// visible stacked on screen at once.
+func TestRenderTabRow1_SyncSuffixNeverOverflows(t *testing.T) {
+	m := Model{
+		topFolders: []string{"Baby", "Change-Management", "Linux"},
+		folderCounts: map[string]int{
+			"":                  69,
+			"Baby":              7,
+			"Change-Management": 10,
+			"Linux":             1,
+		},
+		lastSynced: time.Now().Add(-10 * time.Minute),
+	}
+	for width := 60; width <= 130; width++ {
+		m.width = width
+		m.ensureTabVisible()
+		row := m.renderTabRow1(width - 1)
+		if got := lipgloss.Width(row); got > width-1 {
+			t.Fatalf("width=%d: row1 (with sync suffix) renders at %d columns, exceeds budget %d: %q",
+				width, got, width-1, row)
+		}
+	}
+
+	m.syncing = true
+	for width := 60; width <= 130; width++ {
+		m.width = width
+		m.ensureTabVisible()
+		row := m.renderTabRow1(width - 1)
+		if got := lipgloss.Width(row); got > width-1 {
+			t.Fatalf("width=%d: row1 (syncing…) renders at %d columns, exceeds budget %d: %q",
+				width, got, width-1, row)
 		}
 	}
 }
