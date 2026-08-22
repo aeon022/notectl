@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/aeon022/notectl/internal/config"
+	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ var searchCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
 		asJSON, _ := cmd.Flags().GetBool("json")
+		tag, _ := cmd.Flags().GetString("tag")
 		limit, _ := cmd.Flags().GetInt("limit")
 
 		// try SQLite first (fast FTS)
@@ -28,7 +30,7 @@ var searchCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		results, err := s.List(context.Background(), store.Filter{Query: query, Limit: limit})
+		results, err := s.List(context.Background(), store.Filter{Query: query, Tag: tag, Limit: limit})
 		if err != nil {
 			return err
 		}
@@ -38,6 +40,9 @@ var searchCmd = &cobra.Command{
 			results, err = notes.Search(config.VaultPath(), query, limit)
 			if err != nil {
 				return err
+			}
+			if tag != "" {
+				results = models.FilterByTag(results, tag)
 			}
 		}
 
@@ -61,5 +66,6 @@ var searchCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(searchCmd)
 	searchCmd.Flags().Bool("json", false, "Output as JSON")
+	searchCmd.Flags().StringP("tag", "t", "", "Filter by tag (exact match)")
 	searchCmd.Flags().IntP("limit", "n", 20, "Max results")
 }

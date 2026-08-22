@@ -184,3 +184,37 @@ func TestList_HidesObsidianSideOfMirroredPair(t *testing.T) {
 		t.Errorf("CountByFolder()[Shopping] = %d, want 2 (matching the deduped List count)", counts["Shopping"])
 	}
 }
+
+// Pins the boundary-matching behind Filter.Tag: "go" must not match a note
+// tagged "golang" (substring trap), a tag match must be case-insensitive,
+// and a note with several tags must still match on any one of them.
+func TestList_FiltersByTagExactCaseInsensitive(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	notesByID := map[string]models.Note{
+		"go-note":     {ID: "go-note", Title: "Go note", Tags: []string{"go", "cli"}, Source: "obsidian"},
+		"golang-note": {ID: "golang-note", Title: "Golang note", Tags: []string{"golang"}, Source: "obsidian"},
+		"upper-note":  {ID: "upper-note", Title: "Upper note", Tags: []string{"Go"}, Source: "obsidian"},
+	}
+	for _, n := range notesByID {
+		n := n
+		n.ModTime, n.Created = now, now
+		if err := s.Upsert(ctx, &n); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", n.ID, err)
+		}
+	}
+
+	got, err := s.List(ctx, Filter{Tag: "go"})
+	if err != nil {
+		t.Fatalf("List(tag=go) error = %v", err)
+	}
+	ids := map[string]bool{}
+	for _, n := range got {
+		ids[n.ID] = true
+	}
+	if len(got) != 2 || !ids["go-note"] || !ids["upper-note"] || ids["golang-note"] {
+		t.Fatalf("List(tag=go) = %+v, want exactly [go-note, upper-note] (golang-note must NOT match on substring)", got)
+	}
+}

@@ -210,6 +210,7 @@ type Filter struct {
 	Source  string
 	Account string
 	Folder  string
+	Tag     string
 	Query   string
 	Limit   int
 }
@@ -249,6 +250,15 @@ func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
 		// without the account filter this would silently mix them.
 		q += ` AND (folder=? OR folder LIKE ? ESCAPE '\')`
 		args = append(args, f.Folder, likeEscape(f.Folder)+`/%`)
+	}
+	if f.Tag != "" {
+		// tags is stored comma-joined with no spaces (see Upsert); wrap both
+		// sides in commas so this matches a whole tag, not a substring of a
+		// longer one (e.g. "go" shouldn't match "golang"). LIKE is
+		// case-insensitive for ASCII in SQLite by default, giving the
+		// case-insensitive exact match this filter wants.
+		q += ` AND (',' || tags || ',') LIKE ? ESCAPE '\'`
+		args = append(args, "%,"+likeEscape(f.Tag)+",%")
 	}
 	if f.Query != "" {
 		q += ` AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)`

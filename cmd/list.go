@@ -19,6 +19,7 @@ var listCmd = &cobra.Command{
 		query, _ := cmd.Flags().GetString("query")
 		folder, _ := cmd.Flags().GetString("folder")
 		source, _ := cmd.Flags().GetString("source")
+		tag, _ := cmd.Flags().GetString("tag")
 		limit, _ := cmd.Flags().GetInt("limit")
 
 		s, err := store.New(config.DBPath(), config.Shared())
@@ -30,6 +31,7 @@ var listCmd = &cobra.Command{
 		notes, err := s.List(context.Background(), store.Filter{
 			Source: source,
 			Folder: folder,
+			Tag:    tag,
 			Query:  query,
 			Limit:  limit,
 		})
@@ -63,6 +65,7 @@ func init() {
 	listCmd.Flags().StringP("query", "q", "", "Search query")
 	listCmd.Flags().StringP("folder", "f", "", "Filter by folder")
 	listCmd.Flags().StringP("source", "s", "", "Filter by source (obsidian|apple)")
+	listCmd.Flags().StringP("tag", "t", "", "Filter by tag (exact match)")
 	listCmd.Flags().IntP("limit", "n", 100, "Max results")
 }
 

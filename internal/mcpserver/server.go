@@ -36,6 +36,7 @@ func toolList() mcp.Tool {
 		mcp.WithDescription("List notes from the local cache. Returns title, folder, tags, and modification date. Sorted by most recently modified."),
 		mcp.WithString("folder", mcp.Description("Filter by folder/subdirectory")),
 		mcp.WithString("source", mcp.Description("Filter by source: obsidian or apple")),
+		mcp.WithString("tag", mcp.Description("Filter by tag (exact match)")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50)")),
 	)
 }
@@ -61,6 +62,7 @@ func toolSearch() mcp.Tool {
 	return mcp.NewTool("search_notes",
 		mcp.WithDescription("Search notes by keyword across title and content. Returns matching notes with preview."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search term")),
+		mcp.WithString("tag", mcp.Description("Filter by tag (exact match)")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 10)")),
 	)
 }
@@ -84,6 +86,7 @@ func toolSync() mcp.Tool {
 func handleList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	folder := req.GetString("folder", "")
 	source := req.GetString("source", "")
+	tag := req.GetString("tag", "")
 	limit := int(req.GetFloat("limit", 50))
 
 	s, err := store.New(config.DBPath(), config.Shared())
@@ -95,6 +98,7 @@ func handleList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 	ns, err := s.List(context.Background(), store.Filter{
 		Folder: folder,
 		Source: source,
+		Tag:    tag,
 		Limit:  limit,
 	})
 	if err != nil {
@@ -190,6 +194,7 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 
 func handleSearch(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	query := req.GetString("query", "")
+	tag := req.GetString("tag", "")
 	limit := int(req.GetFloat("limit", 10))
 	if query == "" {
 		return mcp.NewToolResultError("query is required"), nil
@@ -201,12 +206,15 @@ func handleSearch(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 	}
 	defer s.Close()
 
-	results, err := s.List(context.Background(), store.Filter{Query: query, Limit: limit})
+	results, err := s.List(context.Background(), store.Filter{Query: query, Tag: tag, Limit: limit})
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	if len(results) == 0 {
 		results, _ = notes.Search(config.VaultPath(), query, limit)
+		if tag != "" {
+			results = models.FilterByTag(results, tag)
+		}
 	}
 	if len(results) == 0 {
 		return mcp.NewToolResultText(fmt.Sprintf("No notes found for %q", query)), nil
