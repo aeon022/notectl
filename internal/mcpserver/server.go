@@ -37,6 +37,7 @@ func toolList() mcp.Tool {
 		mcp.WithString("folder", mcp.Description("Filter by folder/subdirectory")),
 		mcp.WithString("source", mcp.Description("Filter by source: obsidian or apple")),
 		mcp.WithString("tag", mcp.Description("Filter by tag (exact match)")),
+		mcp.WithString("event_id", mcp.Description("Filter by linked calendar event ID (exact match)")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50)")),
 	)
 }
@@ -55,6 +56,7 @@ func toolWrite() mcp.Tool {
 		mcp.WithString("body", mcp.Required(), mcp.Description("Note content in Markdown")),
 		mcp.WithString("folder", mcp.Description("Subfolder within vault (optional)")),
 		mcp.WithString("tags", mcp.Description("Comma-separated tags")),
+		mcp.WithString("event_id", mcp.Description("Link to a calendar event by ID (e.g. from calctl's create_event)")),
 	)
 }
 
@@ -87,6 +89,7 @@ func handleList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 	folder := req.GetString("folder", "")
 	source := req.GetString("source", "")
 	tag := req.GetString("tag", "")
+	eventID := req.GetString("event_id", "")
 	limit := int(req.GetFloat("limit", 50))
 
 	s, err := store.New(config.DBPath(), config.Shared())
@@ -96,10 +99,11 @@ func handleList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult
 	defer s.Close()
 
 	ns, err := s.List(context.Background(), store.Filter{
-		Folder: folder,
-		Source: source,
-		Tag:    tag,
-		Limit:  limit,
+		Folder:  folder,
+		Source:  source,
+		Tag:     tag,
+		EventID: eventID,
+		Limit:   limit,
 	})
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -165,6 +169,7 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	body := req.GetString("body", "")
 	folder := req.GetString("folder", "")
 	tagsStr := req.GetString("tags", "")
+	eventID := req.GetString("event_id", "")
 	if title == "" || body == "" {
 		return mcp.NewToolResultError("title and body are required"), nil
 	}
@@ -177,7 +182,7 @@ func handleWrite(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResul
 	}
 
 	n, werr := syncdispatch.WriteBySource(config.Source(), syncdispatch.WriteParams{
-		Title: title, Body: body, Tags: tags, Folder: folder, VaultPath: config.VaultPath(),
+		Title: title, Body: body, Tags: tags, EventID: eventID, Folder: folder, VaultPath: config.VaultPath(),
 	})
 	if werr != nil {
 		return mcp.NewToolResultError(werr.Error()), nil
@@ -328,7 +333,7 @@ func handleGetDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 
 	// create from template
 	body := dailyNoteTemplate()
-	n, err := notes.Write(vaultPath, today, body, []string{"daily"}, folder)
+	n, err := notes.Write(vaultPath, today, body, []string{"daily"}, folder, "")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("create daily note: %v", err)), nil
 	}
@@ -355,7 +360,7 @@ func handleAppendDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.Cal
 		// create first
 		body := dailyNoteTemplate()
 		var err error
-		n, err = notes.Write(vaultPath, today, body, []string{"daily"}, folder)
+		n, err = notes.Write(vaultPath, today, body, []string{"daily"}, folder, "")
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("create daily note: %v", err)), nil
 		}
@@ -369,7 +374,7 @@ func handleAppendDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.Cal
 		tags = []string{"daily"}
 	}
 
-	n, err := notes.Write(vaultPath, today, newBody, tags, folder)
+	n, err := notes.Write(vaultPath, today, newBody, tags, folder, n.EventID)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

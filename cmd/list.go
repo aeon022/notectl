@@ -20,6 +20,7 @@ var listCmd = &cobra.Command{
 		folder, _ := cmd.Flags().GetString("folder")
 		source, _ := cmd.Flags().GetString("source")
 		tag, _ := cmd.Flags().GetString("tag")
+		event, _ := cmd.Flags().GetString("event")
 		limit, _ := cmd.Flags().GetInt("limit")
 
 		s, err := store.New(config.DBPath(), config.Shared())
@@ -29,11 +30,12 @@ var listCmd = &cobra.Command{
 		defer s.Close()
 
 		notes, err := s.List(context.Background(), store.Filter{
-			Source: source,
-			Folder: folder,
-			Tag:    tag,
-			Query:  query,
-			Limit:  limit,
+			Source:  source,
+			Folder:  folder,
+			Tag:     tag,
+			EventID: event,
+			Query:   query,
+			Limit:   limit,
 		})
 		if err != nil {
 			return err
@@ -66,6 +68,7 @@ func init() {
 	listCmd.Flags().StringP("folder", "f", "", "Filter by folder")
 	listCmd.Flags().StringP("source", "s", "", "Filter by source (obsidian|apple)")
 	listCmd.Flags().StringP("tag", "t", "", "Filter by tag (exact match)")
+	listCmd.Flags().StringP("event", "e", "", "Filter by linked calendar event ID (exact match)")
 	listCmd.Flags().IntP("limit", "n", 100, "Max results")
 }
 

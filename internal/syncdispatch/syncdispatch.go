@@ -74,11 +74,12 @@ type WriteParams struct {
 	// AppleBody is set) Apple use it directly; empty creates a new note.
 	// Obsidian/Markdown's notes.Write always matches by title/slug instead,
 	// regardless of ID.
-	ID     string
-	Title  string
-	Body   string
-	Tags   []string
-	Folder string
+	ID      string
+	Title   string
+	Body    string
+	Tags    []string
+	EventID string // opaque calctl calendar event id to link, "" if none
+	Folder  string
 	// AppleBody, when set, is the exact (already HTML, possibly block-
 	// reconciled) body to send via notes.WriteApple(ID, ...) — used by the
 	// TUI editor, which already knows the note's id and does its own
@@ -105,21 +106,21 @@ func WriteBySource(src config.SourceType, p WriteParams) (*models.Note, error) {
 			if err != nil {
 				return nil, err
 			}
-			return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, Folder: p.Folder, Source: "apple", ModTime: now, Created: now}, nil
+			return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, EventID: p.EventID, Folder: p.Folder, Source: "apple", ModTime: now, Created: now}, nil
 		}
 		id, err := notes.WriteApple(p.ID, p.Title, p.AppleBody, p.Folder)
 		if err != nil {
 			return nil, err
 		}
-		return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, Folder: p.Folder, Source: "apple", ModTime: now, Created: now}, nil
+		return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, EventID: p.EventID, Folder: p.Folder, Source: "apple", ModTime: now, Created: now}, nil
 	case config.SourceJoplin:
 		id, err := notes.WriteJoplin(p.ID, p.Title, p.Body, p.Folder)
 		if err != nil {
 			return nil, err
 		}
-		return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, Folder: p.Folder, Source: "joplin", ModTime: now, Created: now}, nil
+		return &models.Note{ID: id, Title: p.Title, Body: p.Body, Tags: p.Tags, EventID: p.EventID, Folder: p.Folder, Source: "joplin", ModTime: now, Created: now}, nil
 	default:
-		return notes.Write(p.VaultPath, p.Title, p.Body, p.Tags, p.Folder)
+		return notes.Write(p.VaultPath, p.Title, p.Body, p.Tags, p.Folder, p.EventID)
 	}
 }
 

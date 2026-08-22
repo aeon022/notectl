@@ -22,6 +22,7 @@ var writeCmd = &cobra.Command{
 		body, _ := cmd.Flags().GetString("body")
 		folder, _ := cmd.Flags().GetString("folder")
 		tagsStr, _ := cmd.Flags().GetString("tags")
+		eventID, _ := cmd.Flags().GetString("event-id")
 
 		// read body from stdin if not provided
 		if body == "" {
@@ -42,7 +43,7 @@ var writeCmd = &cobra.Command{
 		}
 
 		n, werr := syncdispatch.WriteBySource(config.Source(), syncdispatch.WriteParams{
-			Title: title, Body: body, Tags: tags, Folder: folder, VaultPath: config.VaultPath(),
+			Title: title, Body: body, Tags: tags, EventID: eventID, Folder: folder, VaultPath: config.VaultPath(),
 		})
 		if werr != nil {
 			return werr
@@ -65,4 +66,5 @@ func init() {
 	writeCmd.Flags().StringP("body", "b", "", "Note body (default: read from stdin)")
 	writeCmd.Flags().StringP("folder", "f", "", "Subfolder within vault")
 	writeCmd.Flags().StringP("tags", "t", "", "Comma-separated tags")
+	writeCmd.Flags().String("event-id", "", "Link to a calendar event by ID (e.g. from calctl create_event)")
 }

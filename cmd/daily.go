@@ -35,7 +35,7 @@ var dailyCmd = &cobra.Command{
 
 		// create with template
 		body := dailyTemplate(time.Now())
-		n, err := notes.Write(vaultPath, today, body, []string{"daily"}, folder)
+		n, err := notes.Write(vaultPath, today, body, []string{"daily"}, folder, "")
 		if err != nil {
 			return fmt.Errorf("create daily note: %w", err)
 		}

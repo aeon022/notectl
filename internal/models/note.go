@@ -10,6 +10,7 @@ type Note struct {
 	Title   string
 	Body    string
 	Tags    []string
+	EventID string // opaque id of a linked calctl calendar event, "" if none
 	Folder  string
 	Account string // Apple Notes account name (apple only, "" for obsidian) — e.g. "iCloud", "FH Burgenland"
 	Path    string // relative path in vault (obsidian only)

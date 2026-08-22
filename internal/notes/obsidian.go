@@ -84,9 +84,9 @@ func TargetPath(title, folder string) string {
 
 // Write creates or overwrites a note in the vault.
 //
-// Known limitation: buildContent only re-emits tags/created, so any other
-// frontmatter key an existing file carries is dropped on overwrite.
-func Write(vaultPath, title, body string, tags []string, folder string) (*models.Note, error) {
+// Known limitation: buildContent only re-emits tags/event_id/created, so any
+// other frontmatter key an existing file carries is dropped on overwrite.
+func Write(vaultPath, title, body string, tags []string, folder, eventID string) (*models.Note, error) {
 	dir := vaultPath
 	if folder != "" {
 		dir = filepath.Join(vaultPath, folder)
@@ -97,7 +97,7 @@ func Write(vaultPath, title, body string, tags []string, folder string) (*models
 	filename := slugify(title) + ".md"
 	fullPath := filepath.Join(dir, filename)
 
-	content := buildContent(title, body, tags)
+	content := buildContent(title, body, tags, eventID)
 	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
 		return nil, err
 	}
@@ -144,6 +144,7 @@ func Search(vaultPath, query string, limit int) ([]models.Note, error) {
 type frontmatter struct {
 	Title   string    `yaml:"title"`
 	Tags    []string  `yaml:"tags"`
+	EventID string    `yaml:"event_id,omitempty"`
 	Created time.Time `yaml:"created"`
 }
 
@@ -193,6 +194,7 @@ func readFile(vaultPath, path string, info os.FileInfo) (models.Note, error) {
 		Title:   title,
 		Body:    body,
 		Tags:    fm.Tags,
+		EventID: fm.EventID,
 		Folder:  folder,
 		Path:    rel,
 		Source:  "obsidian",
@@ -201,7 +203,7 @@ func readFile(vaultPath, path string, info os.FileInfo) (models.Note, error) {
 	}, nil
 }
 
-func buildContent(title, body string, tags []string) string {
+func buildContent(title, body string, tags []string, eventID string) string {
 	var sb strings.Builder
 	sb.WriteString("---\ntitle: " + yamlSingleQuote(title) + "\n")
 	if len(tags) > 0 {
@@ -210,6 +212,9 @@ func buildContent(title, body string, tags []string) string {
 			sb.WriteString("\n  - " + t)
 		}
 		sb.WriteString("\n")
+	}
+	if eventID != "" {
+		sb.WriteString("event_id: " + yamlSingleQuote(eventID) + "\n")
 	}
 	sb.WriteString("created: " + time.Now().Format("2006-01-02") + "\n---\n\n")
 	sb.WriteString("# " + title + "\n\n")

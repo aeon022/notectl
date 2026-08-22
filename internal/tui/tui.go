@@ -3340,7 +3340,7 @@ func undoDeleteNoteCmd(n models.Note) tea.Cmd {
 				ModTime: time.Now(), Created: time.Now(),
 			}
 		default:
-			restored, err = notes.Write(config.VaultPath(), n.Title, n.Body, n.Tags, n.Folder)
+			restored, err = notes.Write(config.VaultPath(), n.Title, n.Body, n.Tags, n.Folder, n.EventID)
 			if err != nil {
 				return noteRestoredMsg{err: err}
 			}

@@ -114,7 +114,7 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, ex
 				"create in obsidian %q (folder %q): would overwrite existing note %q — skipped", n.Title, n.Folder, clash.Path))
 			continue
 		}
-		newNote, err := notes.Write(vaultPath, n.Title, n.Body, n.Tags, n.Folder)
+		newNote, err := notes.Write(vaultPath, n.Title, n.Body, n.Tags, n.Folder, n.EventID)
 		if err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("create in obsidian %q: %v", n.Title, err))
 			continue
@@ -146,7 +146,7 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, ex
 
 	for _, p := range d.PushToObsidian {
 		old := obsByID[p.Link.ObsidianID] // zero value if this is a fresh bootstrap link — Tags is then just nil, which is fine
-		newNote, err := notes.Write(vaultPath, p.Title, p.Body, old.Tags, p.Folder)
+		newNote, err := notes.Write(vaultPath, p.Title, p.Body, old.Tags, p.Folder, old.EventID)
 		if err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("update obsidian %q: %v", p.Title, err))
 			continue

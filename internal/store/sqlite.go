@@ -114,6 +114,7 @@ func (s *Store) migrate() error {
 			title     TEXT NOT NULL DEFAULT '',
 			body      TEXT NOT NULL DEFAULT '',
 			tags      TEXT NOT NULL DEFAULT '',
+			event_id  TEXT NOT NULL DEFAULT '',
 			folder    TEXT NOT NULL DEFAULT '',
 			path      TEXT NOT NULL DEFAULT '',
 			source    TEXT NOT NULL DEFAULT 'obsidian',
@@ -154,7 +155,10 @@ func (s *Store) migrate() error {
 	if err != nil {
 		return err
 	}
-	return s.addColumnIfMissing("notes", "account", "TEXT NOT NULL DEFAULT ''")
+	if err := s.addColumnIfMissing("notes", "account", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return s.addColumnIfMissing("notes", "event_id", "TEXT NOT NULL DEFAULT ''")
 }
 
 // addColumnIfMissing ALTERs table to add column (with the given type/
@@ -189,15 +193,16 @@ func (s *Store) addColumnIfMissing(table, column, def string) error {
 
 func (s *Store) Upsert(ctx context.Context, n *models.Note) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO notes (id,title,body,tags,folder,account,path,source,mod_time,created,synced_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO notes (id,title,body,tags,event_id,folder,account,path,source,mod_time,created,synced_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			title=excluded.title, body=excluded.body,
-			tags=excluded.tags, folder=excluded.folder, account=excluded.account,
+			tags=excluded.tags, event_id=excluded.event_id, folder=excluded.folder, account=excluded.account,
 			mod_time=excluded.mod_time, synced_at=excluded.synced_at
 	`,
 		n.ID, n.Title, n.Body,
 		strings.Join(n.Tags, ","),
+		n.EventID,
 		n.Folder, n.Account, n.Path, n.Source,
 		n.ModTime.UTC().Format(time.RFC3339),
 		n.Created.UTC().Format(time.RFC3339),
@@ -211,6 +216,7 @@ type Filter struct {
 	Account string
 	Folder  string
 	Tag     string
+	EventID string
 	Query   string
 	Limit   int
 }
@@ -220,7 +226,7 @@ type Filter struct {
 const excludeMirroredObsidianSQL = ` AND NOT (source='obsidian' AND id IN (SELECT obsidian_id FROM mirror_links))`
 
 func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
-	q := `SELECT id,title,body,tags,folder,account,path,source,mod_time,created FROM notes WHERE 1=1`
+	q := `SELECT id,title,body,tags,event_id,folder,account,path,source,mod_time,created FROM notes WHERE 1=1`
 	var args []any
 	if f.Source != "" {
 		q += ` AND source=?`
@@ -260,6 +266,12 @@ func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
 		q += ` AND (',' || tags || ',') LIKE ? ESCAPE '\'`
 		args = append(args, "%,"+likeEscape(f.Tag)+",%")
 	}
+	if f.EventID != "" {
+		// Unlike Tag, an event id is an opaque identifier from calctl, not a
+		// human-typed word — exact, case-sensitive match, no LIKE needed.
+		q += ` AND event_id=?`
+		args = append(args, f.EventID)
+	}
 	if f.Query != "" {
 		q += ` AND (title LIKE ? OR body LIKE ? OR tags LIKE ?)`
 		like := "%" + f.Query + "%"
@@ -279,11 +291,11 @@ func (s *Store) List(ctx context.Context, f Filter) ([]models.Note, error) {
 
 func (s *Store) GetByTitle(ctx context.Context, title string) (*models.Note, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id,title,body,tags,folder,account,path,source,mod_time,created FROM notes WHERE title=? LIMIT 1`,
+		`SELECT id,title,body,tags,event_id,folder,account,path,source,mod_time,created FROM notes WHERE title=? LIMIT 1`,
 		title)
 	var n models.Note
 	var tagsStr, modStr, createdStr string
-	err := row.Scan(&n.ID, &n.Title, &n.Body, &tagsStr, &n.Folder, &n.Account, &n.Path, &n.Source, &modStr, &createdStr)
+	err := row.Scan(&n.ID, &n.Title, &n.Body, &tagsStr, &n.EventID, &n.Folder, &n.Account, &n.Path, &n.Source, &modStr, &createdStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -307,7 +319,7 @@ func (s *Store) GetByTitle(ctx context.Context, title string) (*models.Note, err
 // one, rather than guessing which duplicate the caller meant.
 func (s *Store) FindByTitle(ctx context.Context, title string) ([]models.Note, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,title,body,tags,folder,account,path,source,mod_time,created FROM notes WHERE title=? ORDER BY mod_time DESC`,
+		`SELECT id,title,body,tags,event_id,folder,account,path,source,mod_time,created FROM notes WHERE title=? ORDER BY mod_time DESC`,
 		title)
 	if err != nil {
 		return nil, err
@@ -558,7 +570,7 @@ func scan(rows *sql.Rows) ([]models.Note, error) {
 		var n models.Note
 		var tagsStr, modStr, createdStr string
 		if err := rows.Scan(
-			&n.ID, &n.Title, &n.Body, &tagsStr,
+			&n.ID, &n.Title, &n.Body, &tagsStr, &n.EventID,
 			&n.Folder, &n.Account, &n.Path, &n.Source, &modStr, &createdStr,
 		); err != nil {
 			return nil, err

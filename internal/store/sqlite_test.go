@@ -218,3 +218,34 @@ func TestList_FiltersByTagExactCaseInsensitive(t *testing.T) {
 		t.Fatalf("List(tag=go) = %+v, want exactly [go-note, upper-note] (golang-note must NOT match on substring)", got)
 	}
 }
+
+// Pins Filter.EventID as an exact, case-sensitive match — unlike Tag, an
+// event id is an opaque identifier from calctl, not a human-typed word, so
+// "EVT-1" must not match "evt-1".
+func TestList_FiltersByEventIDExactCaseSensitive(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	notesByID := map[string]models.Note{
+		"linked-note":    {ID: "linked-note", Title: "Linked note", EventID: "evt-1", Source: "obsidian"},
+		"other-note":     {ID: "other-note", Title: "Other note", EventID: "evt-2", Source: "obsidian"},
+		"unlinked-note":  {ID: "unlinked-note", Title: "Unlinked note", Source: "obsidian"},
+		"mismatch-cased": {ID: "mismatch-cased", Title: "Mismatch cased", EventID: "EVT-1", Source: "obsidian"},
+	}
+	for _, n := range notesByID {
+		n := n
+		n.ModTime, n.Created = now, now
+		if err := s.Upsert(ctx, &n); err != nil {
+			t.Fatalf("Upsert(%s) error = %v", n.ID, err)
+		}
+	}
+
+	got, err := s.List(ctx, Filter{EventID: "evt-1"})
+	if err != nil {
+		t.Fatalf("List(event_id=evt-1) error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "linked-note" {
+		t.Fatalf("List(event_id=evt-1) = %+v, want exactly [linked-note] (case-sensitive, no cross-event/unlinked matches)", got)
+	}
+}

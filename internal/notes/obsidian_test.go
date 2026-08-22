@@ -22,7 +22,7 @@ func testVault(t *testing.T) string {
 func TestWriteAndRead(t *testing.T) {
 	vault := testVault(t)
 
-	n, err := Write(vault, "Meeting Notes", "Discussed the roadmap.", []string{"work"}, "")
+	n, err := Write(vault, "Meeting Notes", "Discussed the roadmap.", []string{"work"}, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestTitleSurvivesLossySlugRoundTrip(t *testing.T) {
 	vault := testVault(t)
 	const title = "👶 Baby-Checkliste — Geburt ca. 28.12.2026 (Graz)"
 
-	if _, err := Write(vault, title, "body", nil, ""); err != nil {
+	if _, err := Write(vault, title, "body", nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +67,7 @@ func TestTitleSurvivesLossySlugRoundTrip(t *testing.T) {
 
 func TestWriteIntoFolder(t *testing.T) {
 	vault := testVault(t)
-	if _, err := Write(vault, "Idea", "body", nil, "inbox"); err != nil {
+	if _, err := Write(vault, "Idea", "body", nil, "inbox", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(vault, "inbox", "Idea.md")); err != nil {
@@ -77,7 +77,7 @@ func TestWriteIntoFolder(t *testing.T) {
 
 func TestListSkipsHiddenDirs(t *testing.T) {
 	vault := testVault(t)
-	if _, err := Write(vault, "Visible", "body", nil, ""); err != nil {
+	if _, err := Write(vault, "Visible", "body", nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	notes, err := List(vault, nil)
@@ -91,10 +91,10 @@ func TestListSkipsHiddenDirs(t *testing.T) {
 
 func TestListSkipsExcludedFolders(t *testing.T) {
 	vault := testVault(t)
-	if _, err := Write(vault, "Visible", "body", nil, ""); err != nil {
+	if _, err := Write(vault, "Visible", "body", nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Write(vault, "2026-08-17", "diaryctl's own entry", nil, "Diary"); err != nil {
+	if _, err := Write(vault, "2026-08-17", "diaryctl's own entry", nil, "Diary", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,10 +117,10 @@ func TestListSkipsExcludedFolders(t *testing.T) {
 
 func TestSearch(t *testing.T) {
 	vault := testVault(t)
-	if _, err := Write(vault, "Recipe", "Pasta with tomato sauce", nil, ""); err != nil {
+	if _, err := Write(vault, "Recipe", "Pasta with tomato sauce", nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Write(vault, "Journal", "Went for a run", nil, ""); err != nil {
+	if _, err := Write(vault, "Journal", "Went for a run", nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -141,7 +141,7 @@ func TestSearch(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	vault := testVault(t)
-	if _, err := Write(vault, "Temp", "x", nil, ""); err != nil {
+	if _, err := Write(vault, "Temp", "x", nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := Delete(vault, "Temp.md"); err != nil {

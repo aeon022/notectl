@@ -53,6 +53,9 @@ var readCmd = &cobra.Command{
 		if len(n.Tags) > 0 {
 			fmt.Printf("Tags: %s\n", joinTags(n.Tags))
 		}
+		if n.EventID != "" {
+			fmt.Printf("Event: %s\n", n.EventID)
+		}
 		fmt.Printf("Modified: %s\n\n", n.ModTime.Format("Mon, 02 Jan 2006 15:04"))
 		fmt.Println(n.Body)
 		return nil
