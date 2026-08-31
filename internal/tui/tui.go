@@ -703,6 +703,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			status := fmt.Sprintf("Synced %d notes", msg.count)
+			if len(config.SyncSources()) > 1 {
+				// Raw combined scan count, not the note count you'll see
+				// browsing — with two sources, a mirrored note is counted
+				// once per side here, while the "All accounts" list dedupes
+				// it down to its Apple row (see excludeMirroredObsidianSQL
+				// in internal/store/sqlite.go).
+				status += " (combined raw scan — mirrored notes count twice; 'All' shows the deduped total)"
+			}
 			if msg.mirrorPending > 0 {
 				status += fmt.Sprintf(" (%d mirror deletion(s) pending — run 'notectl sync --apply-deletes')", msg.mirrorPending)
 			}
