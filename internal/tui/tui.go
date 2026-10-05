@@ -30,8 +30,8 @@ import (
 	"github.com/aeon022/notectl/internal/notes"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/aeon022/notectl/internal/syncdispatch"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
-	"github.com/muesli/reflow/wrap"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -1843,7 +1843,7 @@ func renderDetailBody(body string, cursor, width int) (string, int) {
 
 		// Count visual lines this logical line will take when wrapped
 		// wrap.String wraps at the given width, we split by \n to count
-		wrapped := wrap.String(formatted, width)
+		wrapped := ansi.Hardwrap(formatted, width, true)
 		currentVisualLines += strings.Count(wrapped, "\n") + 1
 
 		sb.WriteString(wrapped + "\n")

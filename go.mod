@@ -10,7 +10,6 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/mark3labs/mcp-go v0.55.1
 	github.com/mattn/go-runewidth v0.0.24
-	github.com/muesli/reflow v0.3.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/spf13/cobra v1.10.2
