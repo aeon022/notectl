@@ -141,6 +141,11 @@ func getStringMapString(key string) map[string]string {
 // map[string]interface{}) into map[string]string, same effective result as
 // viper.GetStringMapString.
 func toStringMapString(v interface{}) map[string]string {
+	// writeConfig folds overrides (e.g. the vaults map, already a
+	// map[string]string) into fileData — don't lose them in the same process.
+	if ms, ok := v.(map[string]string); ok {
+		return ms
+	}
 	m, ok := v.(map[string]interface{})
 	if !ok {
 		return nil
@@ -464,7 +469,8 @@ func expandHome(p string) string {
 
 func contractHome(p string) string {
 	home, _ := os.UserHomeDir()
-	if len(p) > len(home) && p[:len(home)] == home {
+	// require a path separator after home: "/Users/me2/x" is not under "/Users/me"
+	if home != "" && len(p) > len(home) && p[:len(home)] == home && p[len(home)] == filepath.Separator {
 		return "~" + p[len(home):]
 	}
 	return p
