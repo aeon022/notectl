@@ -175,7 +175,7 @@ func parseChecklistState(plain []byte) (map[string]bool, error) {
 	}
 
 	forEachField(note, 5, func(runBytes []byte) bool { // Note.attribute_run
-		length, _ := getVarintField(runBytes, 1) // AttributeRun.length
+		length, _ := getVarintField(runBytes, 1)        // AttributeRun.length
 		if ps, ok := getMessageField(runBytes, 2); ok { // paragraph_style
 			styleType, _ := getVarintField(ps, 1) // ParagraphStyle.style_type
 			if cl, ok := getMessageField(ps, 5); ok && styleType == paragraphStyleChecklist {

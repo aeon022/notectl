@@ -94,10 +94,10 @@ func TestParseChecklistState_BasicMixOfCheckedAndPlain(t *testing.T) {
 	text := lines[0] + "\n" + lines[1] + "\n" + lines[2] + "\n" + lines[3]
 
 	runs := [][]byte{
-		buildAttributeRun(utf16Len(lines[0]+"\n"), nil), // "Header\n" — plain, not a checklist line
+		buildAttributeRun(utf16Len(lines[0]+"\n"), nil),                                            // "Header\n" — plain, not a checklist line
 		buildAttributeRun(utf16Len(lines[1]+"\n"), buildParagraphStyle(buildChecklistEntry(1, 0))), // "Item A\n" — unchecked
 		buildAttributeRun(utf16Len(lines[2]+"\n"), buildParagraphStyle(buildChecklistEntry(2, 1))), // "Item B\n" — checked
-		buildAttributeRun(utf16Len(lines[3]), nil), // "Trailer" — plain, no trailing newline
+		buildAttributeRun(utf16Len(lines[3]), nil),                                                 // "Trailer" — plain, no trailing newline
 	}
 	note := buildNote(text, runs)
 	doc := buildDocument(note)

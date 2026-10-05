@@ -187,4 +187,3 @@ func TestCleanLineMarkers(t *testing.T) {
 		}
 	}
 }
-
