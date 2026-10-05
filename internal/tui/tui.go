@@ -375,19 +375,23 @@ func New(openPath string) Model {
 	si := textinput.New()
 	si.Placeholder = "search notes…"
 	si.CharLimit = 200
+	si.SetWidth(40) // v2: width 0 clips the placeholder to 1 char
 
 	pi := textinput.New()
 	pi.Placeholder = "command…"
 	pi.CharLimit = 40
+	pi.SetWidth(40) // v2: width 0 clips the placeholder to 1 char
 
 	ti := textinput.New()
 	ti.Placeholder = "Note title"
 	ti.CharLimit = 200
 	ti.Focus()
+	ti.SetWidth(40) // v2: width 0 clips the placeholder to 1 char
 
 	tags := textinput.New()
 	tags.Placeholder = "tag1, tag2 (optional)"
 	tags.CharLimit = 200
+	tags.SetWidth(40) // v2: width 0 clips the placeholder to 1 char
 
 	body := textarea.New()
 	body.Placeholder = "Write your note here…"
@@ -397,6 +401,7 @@ func New(openPath string) Model {
 	vi.Placeholder = "~/Documents/MyVault"
 	vi.CharLimit = 500
 	vi.SetValue(config.VaultPathRaw())
+	vi.SetWidth(40) // v2: width 0 clips the placeholder to 1 char
 
 	srcIdx := 0
 	current := config.Source()
@@ -1492,7 +1497,7 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m = m.syncDetailViewport()
 		}
 
-	case " ":
+	case "space":
 		// toggle ☐ ↔ ☑ on current line, write back to Apple Notes
 		if m.detail != nil {
 			lines := strings.Split(m.detail.Body, "\n")
