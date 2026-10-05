@@ -55,20 +55,6 @@ func TestActiveAccount(t *testing.T) {
 	}
 }
 
-func TestResolveAccountCursor(t *testing.T) {
-	m := Model{accounts: []string{"FH Burgenland", "iCloud"}}
-
-	got, ok := m.resolveAccountCursor("iCloud")
-	if !ok || got != 2 {
-		t.Errorf("resolveAccountCursor(iCloud) = (%d, %v), want (2, true)", got, ok)
-	}
-
-	got, ok = m.resolveAccountCursor("Gmail")
-	if ok || got != 0 {
-		t.Errorf("resolveAccountCursor(Gmail) (unknown) = (%d, %v), want (0, false)", got, ok)
-	}
-}
-
 func TestAccountIndicator(t *testing.T) {
 	m := Model{accounts: []string{"FH Burgenland", "iCloud"}}
 

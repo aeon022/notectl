@@ -325,18 +325,6 @@ func (m Model) effectiveAccount() string {
 	return m.activeAccount()
 }
 
-// resolveAccountCursor finds where a persisted account name sits in the
-// current account list, for restoring it on startup. ok is false if it's
-// not a known account (e.g. that Notes.app account was removed since).
-func (m Model) resolveAccountCursor(account string) (int, bool) {
-	for i, a := range m.accounts {
-		if a == account {
-			return i + 1, true
-		}
-	}
-	return 0, false
-}
-
 // accountIndicator renders the compact "‹accountName› (i/n)" (or "All
 // accounts (n)") shown in the header — "" when there's nothing to
 // disambiguate, so renderAppHeader can just skip it.
