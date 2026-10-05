@@ -135,7 +135,7 @@ func splitTopLevelElements(html string) []string {
 	return out
 }
 
-var blankLineRe = regexp.MustCompile(`\n{2,}`)
+var blankLineRe = regexp.MustCompile(`\n[ \t]*\n\s*`)
 
 // splitPlainBlocks splits edited editor text on blank-line boundaries,
 // mirroring how BlocksToPlain joins blocks back together.
