@@ -245,6 +245,11 @@ func slugify(s string) string {
 			out.WriteRune(r)
 		}
 	}
+	if out.Len() == 0 {
+		// all-non-ASCII title (e.g. "日本語"): don't write ".md", and don't
+		// collide with every other such note — derive a stable name instead.
+		return fmt.Sprintf("note-%x", sha1.Sum([]byte(s)))[:13]
+	}
 	return strings.ReplaceAll(out.String(), " ", "-")
 }
 
