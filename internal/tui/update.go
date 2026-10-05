@@ -50,8 +50,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bodyArea.SetHeight(m.height - 11)
 		m.ensureTabVisible()
 
+	case tea.FocusMsg:
+		// Back in the window: refresh the list from the local DB (not a
+		// sync) — but only while just browsing, never under input or a
+		// pending confirmation, and not more often than every 5s.
+		if m.browsingIdle() && time.Since(m.lastLoad) > focusReloadAfter {
+			m.lastLoad = time.Now() // debounce focus flicker; no loading flag, so the list never blanks
+			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
+		}
+		return m, nil
+
 	case notesLoadedMsg:
 		m.loading = false
+		m.lastLoad = time.Now()
 		// Remember which note was selected so we can restore it after the list changes
 		// (e.g. after a sync that reorders notes by mod_time).
 		var prevID string

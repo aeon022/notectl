@@ -212,6 +212,7 @@ type Model struct {
 	statusTime time.Time
 	err        error
 	syncing    bool
+	lastLoad   time.Time // when notesLoadedMsg last arrived; FocusMsg reloads only if this is stale
 	lastSynced time.Time // zero = never synced this install
 	sp         spinner.Model
 	loading    bool

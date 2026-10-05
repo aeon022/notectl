@@ -292,15 +292,27 @@ func (m Model) applySortOrder() Model {
 	return m
 }
 
+// copyToClipboardCmd copies via OSC 52 (works over SSH/tmux) and pbcopy
+// (for terminals that ignore OSC 52, e.g. Terminal.app).
 func copyToClipboardCmd(text string) tea.Cmd {
-	return func() tea.Msg {
+	return tea.Batch(tea.SetClipboard(text), func() tea.Msg {
 		cmd := exec.Command("pbcopy")
 		cmd.Stdin = strings.NewReader(text)
 		if err := cmd.Run(); err != nil {
 			return errMsg{err}
 		}
 		return nil
-	}
+	})
+}
+
+const focusReloadAfter = 5 * time.Second
+
+// browsingIdle reports whether the user is just looking at the note list:
+// no detail/editor/settings/help/tags/graph view, search, palette, pending
+// delete confirmation, or work in flight.
+func (m Model) browsingIdle() bool {
+	return m.view == viewList && !m.searching && !m.inPalette &&
+		m.confirmID == "" && !m.syncing && !m.loading
 }
 
 func smartDate(t time.Time) string {

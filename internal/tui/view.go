@@ -28,6 +28,7 @@ func (m Model) View() tea.View {
 	// every render instead of once at Program startup.
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeAllMotion
+	v.ReportFocus = true // FocusMsg → reload the list when the window regains focus
 	return v
 }
 
