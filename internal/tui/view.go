@@ -10,9 +10,11 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/aeon022/missionctl-core/emptystate"
 	"github.com/aeon022/missionctl-core/keymap"
 	"github.com/aeon022/missionctl-core/overlay"
 	"github.com/aeon022/missionctl-core/palette"
+	"github.com/aeon022/missionctl-core/statusbar"
 	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
@@ -44,7 +46,7 @@ func (m Model) viewContent() string {
 		// "?" is only reachable from the main list, so the list is always
 		// the correct background to keep visible behind the popup. No
 		// enclosing border on the list view, so inset 0 is safe.
-		return overlay.Center(m.renderList(), m.renderHelpPopup(), m.width, m.height, 0)
+		return overlay.CenterDim(m.renderList(), m.renderHelpPopup(), m.width, m.height, 0)
 	case viewTags:
 		return overlay.Center(m.renderList(), m.renderTags(), m.width, m.height, 0)
 	case viewGraph:
@@ -254,9 +256,9 @@ func (m Model) renderSinglePane() string {
 	listH := m.listHeight()
 
 	if m.loading {
-		b.WriteString("\n  " + m.sp.View() + styleHelp.Render(" Loading notes…") + "\n")
+		b.WriteString(emptystate.Loading(m.width, listH, m.sp.View(), "Loading notes…") + "\n")
 	} else if len(m.notes) == 0 {
-		b.WriteString("\n" + styleHelp.Render("  "+emptyHint()) + "\n")
+		b.WriteString(emptystate.Render(m.width, listH, "📝", "No notes", emptySuggestion()) + "\n")
 	} else {
 		lines, cursorLine := m.buildListLines(m.width, true)
 		start := 0
@@ -313,9 +315,9 @@ func (m Model) renderTwoPane() string {
 	// ── left: note list ──
 	var leftLines []string
 	if m.loading {
-		leftLines = []string{" " + m.sp.View() + styleHelp.Render(" Loading notes…")}
+		leftLines = strings.Split(emptystate.Loading(listContentW, paneH, m.sp.View(), "Loading notes…"), "\n")
 	} else if len(m.notes) == 0 {
-		leftLines = []string{styleHelp.Render(" " + emptyHint())}
+		leftLines = strings.Split(emptystate.Render(listContentW, paneH, "📝", "No notes", emptySuggestion()), "\n")
 	} else {
 		lines, cursorLine := m.buildListLines(listContentW, false)
 		start := 0
@@ -568,27 +570,18 @@ func (m Model) renderHelpBar(w int) string {
 		}
 		return styleOK.Render("✓ " + m.status)
 	}
-	line1 := styleHelp.Render("enter:open  n:new  e:edit  d:delete  u:undo  y:copy  S:sort  H:hide empty")
-	line2 := styleHelp.Render("o:editor  s:sync  p:settings  /:search  tab:notebook  l/h:expand  ?:help  q:quit")
-
-	// right's own length isn't fixed — cursor position and note count both
-	// change digit count as you move around or switch notebooks — and used
-	// to get appended after line2 unconditionally, with pad only ever
-	// clamped to a minimum of 0 rather than dropping right when there was
-	// no room left for it. On this bottom row that overflow is worse than
-	// elsewhere: a wrap here can make the terminal itself scroll, dragging
-	// everything above it out of alignment along with it (reported live as
-	// tab-row duplication and shifted borders right after a notebook
-	// switch changed the note count).
-	pad := w - lipgloss.Width(line2) - lipgloss.Width(right)
-	if pad < 0 {
-		right = ""
-		pad = w - lipgloss.Width(line2)
-		if pad < 0 {
-			pad = 0
-		}
-	}
-	return line1 + "\n" + line2 + strings.Repeat(" ", pad) + right
+	// Hints are in priority order per line (the last ones drop first on a
+	// narrow terminal), and statusbar.Line keeps `right` flush right while
+	// truncating the hints — never overflowing w, which on this bottom row
+	// would make the terminal scroll and drag everything above it out of
+	// alignment (reported live as tab-row duplication after a notebook switch).
+	line1 := statusbar.Hints(w,
+		[2]string{"enter", "open"}, [2]string{"n", "new"}, [2]string{"e", "edit"}, [2]string{"d", "delete"},
+		[2]string{"u", "undo"}, [2]string{"y", "copy"}, [2]string{"S", "sort"}, [2]string{"H", "hide empty"})
+	line2 := statusbar.Hints(w-lipgloss.Width(right)-2,
+		[2]string{"s", "sync"}, [2]string{"/", "search"}, [2]string{"?", "help"}, [2]string{"q", "quit"},
+		[2]string{"o", "editor"}, [2]string{"p", "settings"}, [2]string{"tab", "notebook"}, [2]string{"l/h", "expand"})
+	return line1 + "\n" + statusbar.Line(w, line2, right)
 }
 
 // helpBarHeight is the line budget reserved below the list for
@@ -637,8 +630,10 @@ func (m Model) renderDetail() string {
 	if m.vp.TotalLineCount() > m.vp.Height() {
 		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
 	}
-	helpStr := "esc:back  e:edit  d:delete  o:notes  L:link graph  j/k:scroll  space:toggle checkbox  q:quit"
-	b.WriteString("\n\n" + detailLeftPad + styleHelp.Render(helpStr) + styleMuted.Render(pct))
+	hints := statusbar.Hints(m.width-lipgloss.Width(detailLeftPad)-lipgloss.Width(pct),
+		[2]string{"esc", "back"}, [2]string{"e", "edit"}, [2]string{"q", "quit"}, [2]string{"d", "delete"},
+		[2]string{"o", "notes"}, [2]string{"L", "link graph"}, [2]string{"j/k", "scroll"}, [2]string{"space", "toggle checkbox"})
+	b.WriteString("\n\n" + detailLeftPad + hints + styleMuted.Render(pct))
 	return b.String()
 }
 

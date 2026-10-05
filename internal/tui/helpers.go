@@ -244,6 +244,10 @@ func emptyHint() string {
 	}
 }
 
+// emptySuggestion is emptyHint without its "No notes — " lead, for the
+// emptystate block that shows "No notes" as its own title.
+func emptySuggestion() string { return strings.TrimPrefix(emptyHint(), "No notes — ") }
+
 func dateGroup(t time.Time) string {
 	now := time.Now()
 	switch {
