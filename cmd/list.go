@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/store"
@@ -47,7 +48,7 @@ var listCmd = &cobra.Command{
 		for _, n := range notes {
 			tag := ""
 			if len(n.Tags) > 0 {
-				tag = " [" + joinTags(n.Tags) + "]"
+				tag = " [" + strings.Join(n.Tags, ", ") + "]"
 			}
 			folder := ""
 			if n.Folder != "" {
@@ -70,15 +71,4 @@ func init() {
 	listCmd.Flags().StringP("tag", "t", "", "Filter by tag (exact match)")
 	listCmd.Flags().StringP("event", "e", "", "Filter by linked calendar event ID (exact match)")
 	listCmd.Flags().IntP("limit", "n", 100, "Max results")
-}
-
-func joinTags(tags []string) string {
-	out := ""
-	for i, t := range tags {
-		if i > 0 {
-			out += ", "
-		}
-		out += t
-	}
-	return out
 }

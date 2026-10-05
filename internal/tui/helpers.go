@@ -27,6 +27,36 @@ func splitTitleBlock(blocks []notes.Block) (title, rest string) {
 	return blocks[0].Plain, notes.BlocksToPlain(blocks[1:])
 }
 
+// dropNote removes id from BOTH the visible (filtered) list and allNotes (the
+// source search, tags and the link graph work from). Editing only m.notes
+// left deleted notes in allNotes: with no filter the in-place append even
+// duplicated the last note there, and with a filter the note came back when
+// the search cleared.
+func (m *Model) dropNote(id string) {
+	keep := func(list []models.Note) []models.Note {
+		out := make([]models.Note, 0, len(list))
+		for _, n := range list {
+			if n.ID != id {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	m.notes = keep(m.notes)
+	m.allNotes = keep(m.allNotes)
+}
+
+// setNoteBody updates a cached note's body in both the visible and full list.
+func (m *Model) setNoteBody(id, body string) {
+	for _, list := range [][]models.Note{m.notes, m.allNotes} {
+		for i := range list {
+			if list[i].ID == id {
+				list[i].Body = body
+			}
+		}
+	}
+}
+
 func (m *Model) resetNew(title string) {
 	m.bodyArea.SetWidth(m.editorBodyWidth()) // paneRatio may have changed since last resize
 	m.editorYOffset = 0
@@ -271,14 +301,6 @@ func copyToClipboardCmd(text string) tea.Cmd {
 		}
 		return nil
 	}
-}
-
-func runeLimit(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n-1]) + "…"
 }
 
 func smartDate(t time.Time) string {

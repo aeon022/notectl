@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/aeon022/notectl/internal/config"
@@ -81,12 +82,8 @@ func openInEditor(relPath string) error {
 		editor = "nano"
 	}
 	full := relPath
-	if !isAbs(relPath) {
+	if !filepath.IsAbs(relPath) {
 		full = config.VaultPath() + "/" + relPath
 	}
 	return exec.Command(editor, full).Run()
-}
-
-func isAbs(p string) bool {
-	return len(p) > 0 && p[0] == '/'
 }

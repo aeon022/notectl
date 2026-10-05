@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/notes"
@@ -51,7 +52,7 @@ var readCmd = &cobra.Command{
 			fmt.Printf("Folder: %s\n", n.Folder)
 		}
 		if len(n.Tags) > 0 {
-			fmt.Printf("Tags: %s\n", joinTags(n.Tags))
+			fmt.Printf("Tags: %s\n", strings.Join(n.Tags, ", "))
 		}
 		if n.EventID != "" {
 			fmt.Printf("Event: %s\n", n.EventID)

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aeon022/missionctl-core/humanize"
+
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -229,11 +231,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cachedNote *models.Note
 			for i := range m.notes {
 				if m.notes[i].ID == msg.id {
-					m.notes[i].Body = body
 					cachedNote = &m.notes[i]
 					break
 				}
 			}
+			m.setNoteBody(msg.id, body)
 			// update detail view if open
 			if m.detail != nil && m.detail.ID == msg.id {
 				m.detail.Body = body
@@ -692,12 +694,12 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			n := m.notes[m.cursor]
 			if m.confirmID != n.ID {
 				m.confirmID = n.ID
-				m.setStatus(fmt.Sprintf("Delete \"%s\"?  d:confirm  esc:cancel", runeLimit(n.Title, 30)))
+				m.setStatus(fmt.Sprintf("Delete \"%s\"?  d:confirm  esc:cancel", humanize.Truncate(n.Title, 30)))
 				return m, nil
 			}
 			// confirmed
 			m.confirmID = ""
-			m.notes = append(m.notes[:m.cursor], m.notes[m.cursor+1:]...)
+			m.dropNote(n.ID)
 			if m.cursor >= len(m.notes) {
 				m.cursor = max(0, len(m.notes)-1)
 			}
@@ -743,7 +745,7 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 	case "y":
 		if len(m.notes) > 0 {
-			m.setStatus("Copied: " + runeLimit(m.notes[m.cursor].Title, 30))
+			m.setStatus("Copied: " + humanize.Truncate(m.notes[m.cursor].Title, 30))
 			return m, copyToClipboardCmd(m.notes[m.cursor].Title)
 		}
 	case "<":
@@ -872,7 +874,7 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// view's same key which requires a second press. Now matches.
 			if m.confirmID != m.detail.ID {
 				m.confirmID = m.detail.ID
-				m.setStatus(fmt.Sprintf("Delete \"%s\"?  d:confirm  esc:cancel", runeLimit(m.detail.Title, 30)))
+				m.setStatus(fmt.Sprintf("Delete \"%s\"?  d:confirm  esc:cancel", humanize.Truncate(m.detail.Title, 30)))
 				return m, nil
 			}
 			m.confirmID = ""
@@ -882,14 +884,9 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			n := *m.detail
 			id, path, title := n.ID, ref, n.Title
-			for i := range m.notes {
-				if m.notes[i].ID == id {
-					m.notes = append(m.notes[:i], m.notes[i+1:]...)
-					if m.cursor >= len(m.notes) {
-						m.cursor = max(0, len(m.notes)-1)
-					}
-					break
-				}
+			m.dropNote(id)
+			if m.cursor >= len(m.notes) {
+				m.cursor = max(0, len(m.notes)-1)
 			}
 			m.detail = nil
 			m.detailLineCursor = 0
@@ -951,12 +948,7 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					lines[m.detailLineCursor] = toggled
 					newBody := strings.Join(lines, "\n")
 					m.detail.Body = newBody
-					for i := range m.notes {
-						if m.notes[i].ID == m.detail.ID {
-							m.notes[i].Body = newBody
-							break
-						}
-					}
+					m.setNoteBody(m.detail.ID, newBody)
 					m = m.syncDetailViewport()
 					if config.Source() == config.SourceApple {
 						return m, saveAppleBodyCmd(m.detail.ID, newBody, m.detailBlocks)
