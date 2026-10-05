@@ -2,8 +2,8 @@ package notes
 
 import (
 	"fmt"
+	"github.com/aeon022/missionctl-core/applescript"
 	"html"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -31,7 +31,7 @@ import (
 func ListApple(folder string) ([]models.Note, error) {
 	folderFilter := ""
 	if folder != "" {
-		folderFilter = fmt.Sprintf(`if fName is "%s" then`, escapeAS(folder))
+		folderFilter = fmt.Sprintf(`if fName is "%s" then`, applescript.Escape(folder))
 	}
 	script := fmt.Sprintf(`
 tell application "Notes"
@@ -73,7 +73,7 @@ tell application "Notes"
 	return output
 end tell
 `, folderFilter, map[bool]string{true: "end if", false: ""}[folder != ""])
-	out, err := runAppleScript(script)
+	out, err := applescript.RunRaw(script)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ tell application "Notes"
 	return output
 end tell
 `
-	out, err := runAppleScript(script)
+	out, err := applescript.RunRaw(script)
 	if err != nil {
 		return nil, err
 	}
@@ -173,8 +173,8 @@ tell application "Notes"
 		return ""
 	end try
 end tell
-`, escapeAS(rawAppleID(id)))
-	return runAppleScript(script)
+`, applescript.Escape(rawAppleID(id)))
+	return applescript.RunRaw(script)
 }
 
 // WriteApple creates or updates a note in Apple Notes. If id is non-empty,
@@ -200,8 +200,8 @@ tell application "Notes"
 		set body of note id "%s" to "%s"
 	end try
 end tell
-`, escapeAS(rawAppleID(id)), escapeAS(htmlBody))
-		_, err := runAppleScript(updateScript)
+`, applescript.Escape(rawAppleID(id)), applescript.Escape(htmlBody))
+		_, err := applescript.RunRaw(updateScript)
 		return id, err
 	}
 
@@ -216,8 +216,8 @@ tell application "Notes"%s
 	set newNote to make new note at %s with properties {body:"%s"}
 	return id of newNote
 end tell
-`, folderSetup, target, escapeAS(fullBody))
-	out, err := runAppleScript(createScript)
+`, folderSetup, target, applescript.Escape(fullBody))
+	out, err := applescript.RunRaw(createScript)
 	if err != nil {
 		return "", err
 	}
@@ -271,7 +271,7 @@ func UpsertApple(title, body, folder string) (string, error) {
 // specified — so callers that need to filter ListApple's results down to
 // just that account (it returns every account's notes) can do so.
 func DefaultAccountName() (string, error) {
-	return runAppleScript(`tell application "Notes" to get name of default account`)
+	return applescript.RunRaw(`tell application "Notes" to get name of default account`)
 }
 
 // appleFolderRefChain turns a folder path like "Projects/Git" into an
@@ -286,7 +286,7 @@ func appleFolderRefChain(path string) (setupScript, targetRef string) {
 		if seg == "" {
 			continue
 		}
-		esc := escapeAS(seg)
+		esc := applescript.Escape(seg)
 		var existsExpr, refExpr, atClause string
 		if containerRef == "" {
 			existsExpr = fmt.Sprintf(`exists folder "%s"`, esc)
@@ -334,7 +334,7 @@ tell application "Notes"
 	return output
 end tell
 `
-	out, err := runAppleScript(script)
+	out, err := applescript.RunRaw(script)
 	if err != nil {
 		return nil, err
 	}
@@ -367,8 +367,8 @@ tell application "Notes"
 		show note id "%s"
 	end try
 end tell
-`, escapeAS(rawAppleID(id)))
-	_, err := runAppleScript(script)
+`, applescript.Escape(rawAppleID(id)))
+	_, err := applescript.RunRaw(script)
 	return err
 }
 
@@ -383,8 +383,8 @@ func UpdateBody(id, htmlBody string) error {
 tell application "Notes"
 	set body of note id "%s" to "%s"
 end tell
-`, escapeAS(rawAppleID(id)), escapeAS(htmlBody))
-	_, err := runAppleScript(script)
+`, applescript.Escape(rawAppleID(id)), applescript.Escape(htmlBody))
+	_, err := applescript.RunRaw(script)
 	return err
 }
 
@@ -559,8 +559,8 @@ tell application "Notes"
 	else
 		error "note not found: %s"
 	end if
-end tell`, escapeAS(rawAppleID(id)), escapeAS(rawAppleID(id)), escapeAS(rawAppleID(id)))
-	_, err := runAppleScript(script)
+end tell`, applescript.Escape(rawAppleID(id)), applescript.Escape(rawAppleID(id)), applescript.Escape(rawAppleID(id)))
+	_, err := applescript.RunRaw(script)
 	return err
 }
 
@@ -995,20 +995,6 @@ func ensureEmojiSpaces(s string) string {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-func runAppleScript(script string) (string, error) {
-	out, err := exec.Command("osascript", "-e", script).Output()
-	if err != nil {
-		return "", fmt.Errorf("applescript: %w", err)
-	}
-	return strings.TrimRight(string(out), "\n"), nil
-}
-
-func escapeAS(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
-}
 
 func parseAppleNotes(out string) []models.Note {
 	var notes []models.Note
