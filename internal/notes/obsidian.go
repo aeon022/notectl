@@ -108,6 +108,11 @@ func Write(vaultPath, title, body string, tags []string, folder, eventID string)
 
 // Delete removes a note file from the vault.
 func Delete(vaultPath, relPath string) error {
+	// "" would target the vault directory itself, "../x" or an absolute path
+	// would leave it — refuse at the one place every delete route goes through.
+	if !filepath.IsLocal(relPath) || filepath.Clean(relPath) == "." {
+		return fmt.Errorf("refusing to delete %q: not a path inside the vault", relPath)
+	}
 	full := filepath.Join(vaultPath, relPath)
 	return os.Remove(full)
 }
