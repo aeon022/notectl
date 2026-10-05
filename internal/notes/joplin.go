@@ -180,26 +180,6 @@ func ListJoplin(folder string) ([]models.Note, error) {
 	return all, nil
 }
 
-// ReadJoplin fetches a single note by id.
-func ReadJoplin(id string) (*models.Note, error) {
-	var j joplinNoteJSON
-	q := url.Values{"fields": {"id,title,body,parent_id,created_time,updated_time"}}
-	if err := joplinRequest(http.MethodGet, "/notes/"+url.PathEscape(id), q, nil, &j); err != nil {
-		return nil, err
-	}
-
-	folderTitle := ""
-	if j.ParentID != "" {
-		var f joplinFolderJSON
-		if err := joplinRequest(http.MethodGet, "/folders/"+url.PathEscape(j.ParentID), url.Values{"fields": {"id,title"}}, nil, &f); err == nil {
-			folderTitle = f.Title
-		}
-	}
-
-	n := joplinToNote(j, folderTitle)
-	return &n, nil
-}
-
 // WriteJoplin creates a new note (id == "") or updates an existing one's
 // title and body (id != ""). Unlike WriteApple, update also touches title
 // here: Apple Notes derives its displayed title from the body's first
@@ -250,68 +230,6 @@ func WriteJoplin(id, title, body, folder string) (string, error) {
 // class of bug to worry about.
 func DeleteJoplin(id string) error {
 	return joplinRequest(http.MethodDelete, "/notes/"+url.PathEscape(id), nil, nil, nil)
-}
-
-// SearchJoplin does a live full-text search via Joplin's own search index.
-func SearchJoplin(query string, limit int) ([]models.Note, error) {
-	folders, err := fetchJoplinFolders()
-	if err != nil {
-		return nil, err
-	}
-	idToTitle := make(map[string]string, len(folders))
-	for _, f := range folders {
-		idToTitle[f.ID] = f.Title
-	}
-
-	var resp joplinListResponse[joplinNoteJSON]
-	q := url.Values{
-		"query":  {query},
-		"type":   {"note"},
-		"fields": {"id,title,body,parent_id,created_time,updated_time"},
-		"limit":  {fmt.Sprint(limit)},
-	}
-	if err := joplinRequest(http.MethodGet, "/search", q, nil, &resp); err != nil {
-		return nil, err
-	}
-
-	out := make([]models.Note, 0, len(resp.Items))
-	for _, j := range resp.Items {
-		out = append(out, joplinToNote(j, idToTitle[j.ParentID]))
-	}
-	return out, nil
-}
-
-// ListJoplinFolders returns every notebook's full nested path (e.g.
-// "MISSIONCTL/Marketing"), matching JoplinBridge's own path convention.
-func ListJoplinFolders() ([]string, error) {
-	folders, err := fetchJoplinFolders()
-	if err != nil {
-		return nil, err
-	}
-	idToFolder := make(map[string]joplinFolderJSON, len(folders))
-	for _, f := range folders {
-		idToFolder[f.ID] = f
-	}
-
-	pathFor := func(id string) string {
-		var parts []string
-		currentID := id
-		for guard := 0; currentID != "" && guard < 50; guard++ {
-			f, ok := idToFolder[currentID]
-			if !ok {
-				break
-			}
-			parts = append([]string{f.Title}, parts...)
-			currentID = f.ParentID
-		}
-		return strings.Join(parts, "/")
-	}
-
-	out := make([]string, 0, len(folders))
-	for _, f := range folders {
-		out = append(out, pathFor(f.ID))
-	}
-	return out, nil
 }
 
 func fetchJoplinFolders() ([]joplinFolderJSON, error) {

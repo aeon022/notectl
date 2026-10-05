@@ -308,30 +308,6 @@ func appleFolderRefChain(path string) (setupScript, targetRef string) {
 	return b.String(), containerRef
 }
 
-// ListAppleFolders returns all folder names from Apple Notes.
-func ListAppleFolders() ([]string, error) {
-	script := `
-tell application "Notes"
-	set output to ""
-	repeat with f in folders
-		set output to output & (name of f) & linefeed
-	end repeat
-	return output
-end tell
-`
-	out, err := runAppleScript(script)
-	if err != nil {
-		return nil, err
-	}
-	var folders []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			folders = append(folders, line)
-		}
-	}
-	return folders, nil
-}
-
 // ListAppleAccountFolders returns every folder in every Apple Notes
 // account, scoped per account with full nested paths resolved the same way
 // ListApple resolves them for notes — including folders that currently have

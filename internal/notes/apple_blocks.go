@@ -60,13 +60,6 @@ func BlocksToPlain(blocks []Block) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// RenderPlain converts Apple Notes HTML straight to display/editable plain
-// text (equivalent to BlocksToPlain(ParseBlocks(html)), but callers that
-// don't need to save shouldn't have to care about blocks).
-func RenderPlain(html string) string {
-	return BlocksToPlain(ParseBlocks(html))
-}
-
 // splitTopLevelElements splits an HTML fragment into its top-level elements
 // (plus any bare top-level text runs), preserving exact source markup. Apple
 // Notes bodies are always a flat sequence of such elements (<div>, <h1-6>,
