@@ -450,6 +450,26 @@ Claude calls `get_daily_note` (creating it from the template if today's note is 
 
 ---
 
+## Recent changes (October 2026)
+
+- **Window focus.** When the terminal window regains focus, the list reloads from the local database — at most every 5 seconds, and only while you are just browsing (never while a form, editor, search, palette or confirmation is open, so nothing you are typing is lost). Terminals that don't report focus events simply never trigger it.
+
+- **Clipboard.** `y` copies the selected note's title — now through OSC 52 as well as `pbcopy`, so it also works over SSH and inside tmux (your terminal must allow OSC 52; locally `pbcopy` still does the job).
+
+- **Footer and empty states.** The key-hint footer is the suite-wide one: it never wraps and drops the least important hints first on narrow terminals. Empty lists and loading screens show a short message with a hint what to press.
+
+- **Deleting with a filter active.** Deleting a note while a search/filter is active removes it from the full list as well (it no longer comes back on `esc`), and its links and tags are cleaned up. Checklist toggles and cached Apple-note bodies also update the full list.
+
+- **File names.** A title consisting only of non-ASCII characters (e.g. `日本語`) used to become the file name `.md`, so such notes overwrote each other; it is now a stable `note-<hash>.md`.
+
+- **Safer delete.** Deleting refuses an empty path, `.`, or any path outside the vault.
+
+- **Vault limit.** Adding a vault counts toward the free-tier vault limit immediately (the vault list was empty right after adding).
+
+- The TUI now runs on Bubble Tea v2; key bindings are unchanged.
+
+---
+
 ## Architecture
 
 ```
