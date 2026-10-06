@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"github.com/aeon022/notectl/internal/actlog"
 	"os/exec"
 	"strings"
 	"time"
@@ -267,7 +268,7 @@ func saveSettingsCmd(vaultPath string, source config.SourceType) tea.Cmd {
 	}
 }
 
-func deleteNoteCmd(id, relPath string) tea.Cmd {
+func deleteNoteCmd(id, relPath, title string) tea.Cmd {
 	return func() tea.Msg {
 		// Real source deleted first, local cache row only removed once that
 		// actually succeeds — used to delete the cache row unconditionally
@@ -292,6 +293,7 @@ func deleteNoteCmd(id, relPath string) tea.Cmd {
 		if err := s.Delete(context.Background(), id); err != nil {
 			return deletedMsg{err}
 		}
+		actlog.Deleted(title)
 		return deletedMsg{}
 	}
 }

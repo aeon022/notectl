@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"github.com/aeon022/notectl/internal/actlog"
 	"strings"
 	"time"
 
@@ -302,6 +303,7 @@ func handleDelete(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 	if err := s.Delete(ctx, n.ID); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
+	actlog.Deleted(n.Title)
 	return mcp.NewToolResultText(fmt.Sprintf("Deleted: %s (%s)", n.Title, n.Folder)), nil
 }
 
@@ -382,6 +384,7 @@ func handleAppendDailyNote(_ context.Context, req mcp.CallToolRequest) (*mcp.Cal
 		defer s.Close()
 		_ = s.Upsert(context.Background(), n)
 	}
+	actlog.Wrote(today)
 	return mcp.NewToolResultText(fmt.Sprintf("Appended to %s", today)), nil
 }
 

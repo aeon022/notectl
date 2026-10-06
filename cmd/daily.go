@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/aeon022/notectl/internal/actlog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,7 @@ var dailyCmd = &cobra.Command{
 			_ = s.Upsert(context.Background(), n)
 		}
 
+		actlog.Wrote(today)
 		fmt.Printf("Created: %s\n", n.Path)
 		if open {
 			return openInEditor(n.Path)

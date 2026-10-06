@@ -720,7 +720,7 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if config.Source() == config.SourceApple {
 				ref = n.ID
 			}
-			return m, deleteNoteCmd(n.ID, ref)
+			return m, deleteNoteCmd(n.ID, ref, n.Title)
 		}
 	case "u":
 		if m.lastDeleted != nil {
@@ -905,7 +905,7 @@ func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.view = viewList
 			m.lastDeleted = &n
 			m.setStatus("Deleted: " + title + " — press u to undo")
-			return m, deleteNoteCmd(id, path)
+			return m, deleteNoteCmd(id, path, title)
 		}
 
 	case "j", "down":

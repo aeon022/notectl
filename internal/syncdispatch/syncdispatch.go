@@ -9,6 +9,7 @@
 package syncdispatch
 
 import (
+	"github.com/aeon022/notectl/internal/actlog"
 	"time"
 
 	"github.com/aeon022/notectl/internal/config"
@@ -98,6 +99,14 @@ type WriteParams struct {
 // config.Source() duplicated in cmd/write.go, mcpserver's handleWrite, and
 // the TUI's writeNoteCmd.
 func WriteBySource(src config.SourceType, p WriteParams) (*models.Note, error) {
+	n, err := writeBySource(src, p)
+	if err == nil {
+		actlog.Wrote(p.Title) // the one place CLI write, TUI save and MCP write all pass through
+	}
+	return n, err
+}
+
+func writeBySource(src config.SourceType, p WriteParams) (*models.Note, error) {
 	now := time.Now()
 	switch src {
 	case config.SourceApple:
