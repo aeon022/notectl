@@ -99,7 +99,6 @@ type Model struct {
 	topFolders []string            // top-level notebooks, row 1 (index 0 = "All")
 	subFolders map[string][]string // top-level name -> its children's full paths, row 2
 	tabCursor  int                 // index into tabPositions()
-	tabScroll  int                 // first visible row-1 tab, kept in view by ensureTabVisible
 
 	// expandedTops tracks which top-level notebooks currently show their
 	// children in row 2 — keyed by topFolderKey(i), so two collision-split

@@ -565,7 +565,6 @@ func TestRenderList_NoLineEverOverflowsWidth(t *testing.T) {
 		m.height = 40
 		for cursor := 0; cursor < n; cursor++ {
 			m.tabCursor = cursor
-			m.ensureTabVisible()
 			out := m.renderList()
 			for i, line := range strings.Split(out, "\n") {
 				if got := lipgloss.Width(line); got > width {

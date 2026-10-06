@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/aeon022/notectl/internal/store"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestHasMultipleAccounts(t *testing.T) {
@@ -84,7 +85,7 @@ func TestAccountIndicator(t *testing.T) {
 // resize mid-render) — this pins that, plus that a tab bound to a specific
 // account (see topFolderAccounts) names that account, not the global
 // "["/"]" filter state.
-func TestRenderAccountLine_NamesBoundAccountAndNeverExceedsWidth(t *testing.T) {
+func TestAppHeader_NamesBoundAccountAndNeverExceedsWidth(t *testing.T) {
 	longAccount := "2330069032@hochschule-burgenland.at"
 	m := Model{
 		accounts:          []string{longAccount, "Die Brücke || Gerwin", "iCloud"},
@@ -92,14 +93,21 @@ func TestRenderAccountLine_NamesBoundAccountAndNeverExceedsWidth(t *testing.T) {
 		topFolderAccounts: []string{longAccount},
 		tabCursor:         1, // pos{top:1,sub:-1} -> activeFolderAccount() == longAccount
 	}
-	for _, w := range []int{4, 10, 20, 40, 60, 100} {
-		line := m.renderAccountLine(w)
-		if got := lipgloss.Width(line); got > w {
-			t.Errorf("width %d: line %q rendered at %d columns, exceeds width", w, line, got)
+	for _, w := range []int{30, 40, 60, 100} {
+		line := m.renderAppHeader(w)
+		if got := lipgloss.Width(line); got != w {
+			t.Errorf("width %d: header %q rendered at %d columns", w, ansi.Strip(line), got)
 		}
 	}
-	if line := m.renderAccountLine(200); !strings.Contains(line, longAccount) {
-		t.Errorf("renderAccountLine(200) = %q, want it to name the bound account %q", line, longAccount)
+	if line := ansi.Strip(m.renderAppHeader(200)); !strings.Contains(line, "Account: "+longAccount) {
+		t.Errorf("renderAppHeader(200) = %q, want it to name the bound account %q", line, longAccount)
+	}
+	// narrow: the account (middle) is dropped first, the app name and date stay
+	if line := ansi.Strip(m.renderAppHeader(40)); strings.Contains(line, "Account") || !strings.Contains(line, "notectl") {
+		t.Errorf("narrow header must drop the account context first, got %q", line)
+	}
+	if got := (Model{accounts: []string{"a"}}).headerContext(); got != "" {
+		t.Errorf("a single account needs no context, got %q", got)
 	}
 }
 
@@ -251,59 +259,6 @@ func TestSetExpanded_CollisionSplitTabsExpandIndependently(t *testing.T) {
 	}
 }
 
-// Regression test for a real, live-reproduced bug: variable-width row-1
-// tabs let tabWindow evict two tabs for a single one-step tab/shift+tab
-// move — press it once, watch two previously-visible tabs disappear
-// together, not just the one that had to make room. First reproduced past
-// "Change-Management" (an unusually long name), but capping just that name
-// turned out not to fix it in general: an exhaustive sweep still found the
-// same jump recurring at plenty of other, entirely ordinary terminal widths
-// (e.g. exactly at "Notes"->"Notizen", nothing unusually wide involved) —
-// inherent to *any* variable-width greedy packing, not specific to one long
-// label. row1TabWidth's fixed-width padding (see padTabLabel) is what
-// actually closes this: with every tab costing the same, the count that
-// fits in a given width is a constant, so a one-index cursor move can only
-// ever need exactly one more (or fewer) step of scroll. This sweeps every
-// width from 5 to 250 columns, not a handful of samples — the earlier,
-// sample-based version of this test passed while the bug was still live,
-// because none of its six samples happened to land on a bad width.
-func TestTabWindow_SingleStepNeverEvictsMoreThanOneTab(t *testing.T) {
-	m := Model{
-		topFolders:        []string{"Baby", "Change-Management", "Notes", "Notizen", "Notizen", "Projects"},
-		topFolderAccounts: []string{"", "", "", "Die Brücke || Gerwin", "2330069032@hochschule-burgenland.at", ""},
-		subFolders: map[string][]string{
-			"Change-Management": {"Change-Management/KI"},
-			"Projects":          {"Projects/Git", "Projects/MISSIONCTL", "Projects/QuantumPod", "Projects/Syncthing"},
-		},
-		folderCounts: map[string]int{
-			"":                                45,
-			"Baby":                            3,
-			"Change-Management":               9,
-			"Notes":                           23,
-			"Notizen\x00Die Brücke || Gerwin": 2,
-			"Notizen\x002330069032@hochschule-burgenland.at": 1,
-			"Projects": 1,
-		},
-	}
-	for width := 5; width <= 250; width++ {
-		m.width = width
-		m.tabCursor = 0
-		m.tabScroll = 0
-		n := len(m.tabPositions())
-		for step := 0; step < n; step++ {
-			labels := m.topLabels()
-			pos := m.currentPos()
-			before := m.tabScroll
-			start, _ := tabWindow(labels, pos.top, before, m.width-1)
-			if delta := start - before; delta > 1 {
-				t.Fatalf("width=%d step=%d: scroll jumped from %d to %d (delta %d) on a single tab-step, evicting more than one tab at once", width, step, before, start, delta)
-			}
-			m.tabScroll = start
-			m.tabCursor = (m.tabCursor + 1) % n
-		}
-	}
-}
-
 // Regression test for a real, live-reproduced bug: row-1 and row-2 tab
 // labels are folder names — free-form user text — measured via tabWidth,
 // padTabLabel, topFolderLabel, and renderTabRow2's fit loop. All of those
@@ -332,7 +287,6 @@ func TestTabRows_AmbiguousWidthNeverOverflows(t *testing.T) {
 	// case this test isn't after.
 	for width := 60; width <= 200; width++ {
 		m.width = width
-		m.ensureTabVisible()
 		if row := m.renderTabRow1(width - 1); lipgloss.Width(row) > width-1 {
 			t.Fatalf("width=%d: row1 renders at %d columns, exceeds budget %d: %q",
 				width, lipgloss.Width(row), width-1, row)
@@ -369,7 +323,6 @@ func TestRenderTabRow1_SyncSuffixNeverOverflows(t *testing.T) {
 	}
 	for width := 60; width <= 130; width++ {
 		m.width = width
-		m.ensureTabVisible()
 		row := m.renderTabRow1(width - 1)
 		if got := lipgloss.Width(row); got > width-1 {
 			t.Fatalf("width=%d: row1 (with sync suffix) renders at %d columns, exceeds budget %d: %q",
@@ -380,7 +333,6 @@ func TestRenderTabRow1_SyncSuffixNeverOverflows(t *testing.T) {
 	m.syncing = true
 	for width := 60; width <= 130; width++ {
 		m.width = width
-		m.ensureTabVisible()
 		row := m.renderTabRow1(width - 1)
 		if got := lipgloss.Width(row); got > width-1 {
 			t.Fatalf("width=%d: row1 (syncing…) renders at %d columns, exceeds budget %d: %q",

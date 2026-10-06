@@ -7,7 +7,9 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/aeon022/missionctl-core/humanize"
+	"github.com/aeon022/missionctl-core/ui"
 	"github.com/aeon022/notectl/internal/store"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -339,32 +341,21 @@ func (m Model) accountIndicator() string {
 	return fmt.Sprintf("%s (%d/%d)", m.accounts[c-1], c, len(m.accounts))
 }
 
-// renderAccountLine is the always-visible, full-width line just below the
-// app header showing which account is actually in play — replacing the old
-// accountIndicator-in-the-header approach, which had to cram a possibly
-// long account name (a 36-char Exchange UPN, seen live) in next to
-// "notectl" and the date on one shared line; that budget pressure was what
-// previously caused the header to silently overflow and get overwritten by
-// the next redraw. Getting its own line removes the budget problem instead
-// of working around it.
-//
-// Shows the current top-level tab's own bound account (see
-// topFolderAccounts) when it has one — a collision-split tab (e.g. one of
-// two "Notizen" tabs) is unambiguous on its own, so this updates live as
-// you move between them, telling you exactly which account you're looking
-// at without the tab label itself needing to say so. Otherwise falls back
-// to accountIndicator's "All accounts (n)" / "<account> (i/n)" — the global
-// "["/"]" filter state. "" when there's nothing to disambiguate (a single
-// account, or no account concept at all), so callers can skip the row.
-func (m Model) renderAccountLine(w int) string {
+// headerContext is the account text shown in the middle of the app header
+// ("Account: <bound account>" for a tab bound to one, else accountIndicator's
+// "All accounts (n)" / "<account> (i/n)"), "" when there's nothing to
+// disambiguate. ui.Header drops it first, then truncates the app name, when
+// the line is too narrow — so a 36-char Exchange UPN can no longer overflow
+// the header the way it did before the account got its own line (and its own
+// preamble row, which is gone again now that the header carries it).
+func (m Model) headerContext() string {
 	if !m.hasMultipleAccounts() {
 		return ""
 	}
-	text := m.accountIndicator()
 	if a := m.activeFolderAccount(); a != "" {
-		text = "Account: " + a
+		return "Account: " + a
 	}
-	return styleTabParentRef.Render(runewidth.Truncate(text, w, "…"))
+	return m.accountIndicator()
 }
 
 func tabLabel(display string, count int) string {
@@ -423,18 +414,10 @@ func (m *Model) setExpanded(i int, expanded bool) {
 	}
 }
 
-// topFolderNameWidth caps a single top-level tab's own folder-name text —
-// separately from the count/marker tabLabel adds — so one long notebook
-// name can't dominate row 1's width budget on its own. Uncapped, a name
-// like "Change-Management" (27 rendered columns) could force tabWindow to
-// evict two or more tabs at once for a single tab/shift+tab step — you'd
-// press it once and watch several previously-visible tabs vanish
-// together, not just the one that had to make room (confirmed live: a
-// single "tab" press past "Change-Management" dropped both it and "Baby"
-// in the same step). Capping every name to the same modest width bounds
-// how much any one tab can cost, so a single step forward only ever has to
-// evict close to one tab's worth of space, not several.
-const topFolderNameWidth = 14
+// topFolderNameWidth caps a single top-level tab's own folder-name text, so
+// one absurdly long notebook name can't take the whole row. ui.Tabs windows
+// around the active tab, so ordinary names ("Change-Management") show whole.
+const topFolderNameWidth = 24
 
 // topFolderLabel is what tab i actually displays: the folder name (capped
 // to topFolderNameWidth), prefixed with a disclosure marker when it has
@@ -457,41 +440,24 @@ func (m Model) topFolderLabel(i int) string {
 	return "▸ " + top
 }
 
-// row1TabWidth is every row-1 tab's fixed rendered width (name+marker+count,
-// not counting the pill's own Padding). Uniform width — not just a per-name
-// cap — is what actually guarantees tabWindow's scroll can never advance by
-// more than one tab for a single cursor step: with every tab costing
-// exactly the same, how many fit in a given w is a constant, so moving the
-// active tab one index past the current window always needs exactly one
-// more step of scroll, never two. A per-name width cap alone (an earlier
-// version of this fix) still let two tabs evict at once at plenty of
-// realistic terminal widths — capping only bounds the worst case, it
-// doesn't make the arithmetic exact the way equal widths do. Confirmed via
-// an exhaustive width×tab sweep with real folder data from this machine.
-const row1TabWidth = 20
-
-// padTabLabel pads or truncates text to exactly row1TabWidth, so every
-// row-1 tab (see topLabels) occupies identical width — see row1TabWidth's
-// doc comment for why that's load-bearing, not cosmetic. Row 2 (subLabels)
-// deliberately doesn't use this: it has no independent scrolling to keep
-// predictable (see renderTabRow2's doc comment), so padding would only cost
-// visual density for no benefit there.
-func padTabLabel(text string) string {
-	w := runewidth.StringWidth(text)
-	if w > row1TabWidth {
-		return runewidth.Truncate(text, row1TabWidth, "…")
-	}
-	return text + strings.Repeat(" ", row1TabWidth-w)
-}
-
+// topLabels are the row-1 tab names (disclosure marker included, no count)
+// and topCounts their note counts — ui.Tabs puts the count after the name.
 func (m Model) topLabels() []string {
 	labels := make([]string, 0, len(m.topFolders)+1)
-	labels = append(labels, padTabLabel(tabLabel("All", m.folderCounts[""])))
+	labels = append(labels, "All")
 	for i := range m.topFolders {
-		count := m.folderCounts[m.topFolderKey(i)]
-		labels = append(labels, padTabLabel(tabLabel(m.topFolderLabel(i), count)))
+		labels = append(labels, m.topFolderLabel(i))
 	}
 	return labels
+}
+
+func (m Model) topCounts() []int {
+	counts := make([]int, 0, len(m.topFolders)+1)
+	counts = append(counts, m.folderCounts[""])
+	for i := range m.topFolders {
+		counts = append(counts, m.folderCounts[m.topFolderKey(i)])
+	}
+	return counts
 }
 
 func (m Model) subLabels(top string) []string {
@@ -502,73 +468,6 @@ func (m Model) subLabels(top string) []string {
 		labels[i] = tabLabel(leaf, m.folderCounts[k])
 	}
 	return labels
-}
-
-func tabWidth(label string, active bool) int {
-	if active {
-		return lipgloss.Width(styleTabActive.Render(label))
-	}
-	return lipgloss.Width(styleTabInact.Render(label))
-}
-
-// tabWindow grows a visible window of tabs starting at scroll until it no
-// longer fits w columns, then — if that window doesn't include activeIdx —
-// advances scroll and retries, so the active tab is always on screen. It
-// always includes at least one tab even if that single tab alone overflows
-// w, so a very narrow terminal still shows something clickable.
-// growForward returns the largest end such that labels[scroll:end] fits
-// within w — always includes at least one tab (labels[scroll] itself) even
-// if it alone overflows w, so a very narrow terminal still shows something
-// clickable rather than nothing.
-func growForward(labels []string, activeIdx, scroll, w int) (end int) {
-	total := 0
-	end = scroll
-	for end < len(labels) {
-		ww := tabWidth(labels[end], end == activeIdx) + 2
-		if total+ww > w && end > scroll {
-			break
-		}
-		total += ww
-		end++
-	}
-	return end
-}
-
-func tabWindow(labels []string, activeIdx, scroll, w int) (start, end int) {
-	if scroll < 0 {
-		scroll = 0
-	}
-	if scroll > activeIdx {
-		scroll = activeIdx
-	}
-	if end := growForward(labels, activeIdx, scroll, w); activeIdx < end {
-		return scroll, end
-	}
-	// activeIdx doesn't fit growing forward from the current scroll.
-	// Retrying growForward at scroll+1, scroll+2, ... (front-anchored, one
-	// step at a time) was the previous approach here — it can still require
-	// more than one retry to succeed, meaning a single-index cursor move
-	// (one "tab" press) could jump scroll by more than 1, evicting two or
-	// more previously-visible tabs at once instead of just the one that had
-	// to make room (confirmed live and with real folder data from this
-	// machine: moving from "Notes" straight to "Notizen" dropped two tabs
-	// together at several realistic terminal widths, not only past an
-	// unusually wide label). Anchoring activeIdx itself and growing
-	// backward instead finds the smallest possible scroll that includes it
-	// directly — no retrying required — so a one-index cursor move only
-	// ever changes what's visible by the minimum the width budget actually
-	// forces, never more.
-	newScroll := activeIdx
-	total := tabWidth(labels[activeIdx], true) + 2
-	for newScroll > 0 {
-		ww := tabWidth(labels[newScroll-1], false) + 2
-		if total+ww > w {
-			break
-		}
-		total += ww
-		newScroll--
-	}
-	return newScroll, growForward(labels, activeIdx, newScroll, w)
 }
 
 // tabRow1Suffix is row 1's trailing sync-status text ("  syncing…" or
@@ -594,71 +493,59 @@ func (m Model) tabRow1Suffix() string {
 	return ""
 }
 
-// scrollIndicatorMargin is the worst-case extra width row 1's "‹"/"›"
-// scroll indicators can add on top of whatever tabWindow decided fits —
-// each costs 1 column for the glyph plus 2 for the "  " strings.Join
-// separator it introduces as an extra part (3), and both can appear at
-// once (start > 0 *and* more tabs past the end). growForward/tabWindow
-// pick which tabs fit *before* either indicator is known to be needed, so
-// that decision has to reserve for the worst case up front rather than
-// find out afterward that adding one pushed the row over.
-const scrollIndicatorMargin = 6
+// tabHit is the column span [x, x+w) of one visible row-1 tab.
+type tabHit struct{ idx, x, w int }
 
-// ensureTabVisible reclamps m.tabScroll so the active top-level tab is
-// within the rendered window at the current terminal width — called
-// whenever the tab cursor or the terminal width changes.
-func (m *Model) ensureTabVisible() {
-	labels := m.topLabels()
-	w := m.width - 1 - lipgloss.Width(m.tabRow1Suffix()) - scrollIndicatorMargin
-	if w < 1 {
-		w = 1
+// tabBar draws row 1 with ui.Tabs (active pill, others dimmed, count after
+// the name; tabs far from the active one fold into "…") plus the sync suffix,
+// within w columns, and works out where each visible tab sits — by finding its
+// " label count " cell in the plain text. ui.Tabs only drops tabs from the
+// ends, so the visible ones are contiguous around the active tab. Shared by
+// renderTabRow1 and tabHitTest so drawing and clicking can't drift apart.
+func (m Model) tabBar(w int) (string, []tabHit) {
+	suffix := m.tabRow1Suffix()
+	tabsW := w - lipgloss.Width(suffix)
+	if tabsW < 10 { // barely room for tabs: drop the suffix rather than overflow
+		suffix, tabsW = "", w
 	}
-	scroll, _ := tabWindow(labels, m.currentPos().top, m.tabScroll, w)
-	m.tabScroll = scroll
+	labels, counts, active := m.topLabels(), m.topCounts(), m.currentPos().top
+	bar := ui.Tabs(max(tabsW, 1), labels, active, counts)
+	plain := ansi.Strip(bar)
+	seg := func(i int) string {
+		if counts[i] > 0 {
+			return fmt.Sprintf(" %s %d ", labels[i], counts[i])
+		}
+		return " " + labels[i] + " "
+	}
+	col := func(byteIdx int) int { return runewidth.StringWidth(plain[:byteIdx]) }
+
+	at := strings.Index(plain, seg(active))
+	if at < 0 {
+		return bar + suffix, nil
+	}
+	hits := []tabHit{{active, col(at), runewidth.StringWidth(seg(active))}}
+	for end, j := at+len(seg(active)), active+1; j < len(labels); j++ { // right neighbours
+		sg := seg(j)
+		if !strings.HasPrefix(plain[end:], " "+sg) {
+			break
+		}
+		hits = append(hits, tabHit{j, col(end + 1), runewidth.StringWidth(sg)})
+		end += 1 + len(sg)
+	}
+	for start, j := at, active-1; j >= 0; j-- { // left neighbours
+		sg := seg(j)
+		if !strings.HasSuffix(plain[:start], sg+" ") {
+			break
+		}
+		start -= 1 + len(sg)
+		hits = append(hits, tabHit{j, col(start), runewidth.StringWidth(sg)})
+	}
+	return bar + suffix, hits
 }
 
 func (m Model) renderTabRow1(w int) string {
-	labels := m.topLabels()
-	pos := m.currentPos()
-
-	// Reserve room for the trailing sync-status suffix and the possible
-	// "‹"/"›" scroll indicators before deciding how many tabs fit — see
-	// tabRow1Suffix's doc comment and scrollIndicatorMargin. Drop the
-	// suffix entirely rather than let it overflow if there's barely room
-	// for tabs at all.
-	suffix := m.tabRow1Suffix()
-	tabsW := w - lipgloss.Width(suffix) - scrollIndicatorMargin
-	if tabsW < 10 {
-		// Not enough room for tabs and the suffix together — drop the
-		// suffix, but still reserve for the scroll indicators.
-		suffix = ""
-		tabsW = w - scrollIndicatorMargin
-		if tabsW < 1 {
-			tabsW = 1
-		}
-	}
-
-	start, end := tabWindow(labels, pos.top, m.tabScroll, tabsW)
-	var parts []string
-	if start > 0 {
-		parts = append(parts, styleMuted.Render("‹"))
-	}
-	for i := start; i < end; i++ {
-		style := styleTabInact
-		if i == pos.top && pos.sub < 0 {
-			style = styleTabActive
-		} else if i == pos.top {
-			// A child of this notebook is what's actually selected (see
-			// row 2) — keep the parent visibly current but recede it a
-			// touch so the child reads as the real focus.
-			style = styleTabActiveDim
-		}
-		parts = append(parts, style.Render(labels[i]))
-	}
-	if end < len(labels) {
-		parts = append(parts, styleMuted.Render("›"))
-	}
-	return strings.Join(parts, "  ") + suffix
+	bar, _ := m.tabBar(w)
+	return bar
 }
 
 // subTabPrefix renders the "<Parent> › " lead-in that opens row 2 — naming
@@ -715,18 +602,11 @@ func (m Model) renderTabRow2(w int) string {
 // row is -1 if the click missed both.
 func (m Model) tabHitTest(x, y int) (row, idx int) {
 	if y == 1 {
-		labels := m.topLabels()
-		start, end := tabWindow(labels, m.currentPos().top, m.tabScroll, m.width-1)
-		col := 1
-		if start > 0 {
-			col += lipgloss.Width("‹") + 2
-		}
-		for i := start; i < end; i++ {
-			ww := tabWidth(labels[i], i == m.currentPos().top)
-			if x >= col && x < col+ww {
-				return 0, i
+		_, hits := m.tabBar(m.width - 1)
+		for _, h := range hits {
+			if x >= 1+h.x && x < 1+h.x+h.w { // +1: the row is drawn after a 1-column margin
+				return 0, h.idx
 			}
-			col += ww + 2
 		}
 		return -1, -1
 	}

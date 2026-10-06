@@ -16,6 +16,7 @@ import (
 	"github.com/aeon022/missionctl-core/palette"
 	"github.com/aeon022/missionctl-core/statusbar"
 	"github.com/aeon022/missionctl-core/theme"
+	"github.com/aeon022/missionctl-core/ui"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/mattn/go-runewidth"
@@ -234,9 +235,6 @@ func (m Model) renderPaletteBlock() string {
 func (m Model) renderSinglePane() string {
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	if acct := m.renderAccountLine(m.width - 1); acct != "" {
-		b.WriteString(" " + acct + "\n")
-	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -287,9 +285,6 @@ func (m Model) renderTwoPane() string {
 
 	var b strings.Builder
 	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	if acct := m.renderAccountLine(m.width - 1); acct != "" {
-		b.WriteString(" " + acct + "\n")
-	}
 	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
 	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
 		b.WriteString(row2 + "\n")
@@ -428,14 +423,10 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 }
 
 // preambleRows returns the fixed-height chrome above the note list: app
-// header + (if there's more than one account) the account line + row-1
-// notebook tabs + (if the active notebook has children AND is expanded —
+// header (it carries the account context) + row-1 notebook tabs + (if the active notebook has children AND is expanded —
 // see expandedTops) row-2 sub-notebook tabs + the divider line.
 func (m Model) preambleRows() int {
 	y := 3 // header + tab row 1 + divider
-	if m.hasMultipleAccounts() {
-		y++ // account line
-	}
 	pos := m.currentPos()
 	if pos.top > 0 && pos.top <= len(m.topFolders) && m.isExpanded(pos.top-1) && len(m.activeChildren()) > 0 {
 		y++ // tab row 2
@@ -529,29 +520,22 @@ func (m Model) rowHitTest(x, y int) int {
 	return lineToNote[lineIdx]
 }
 
-// renderAppHeader is just "notectl" + the date — account context used to
-// share this one line via accountIndicator, which meant a real account name
-// (a 36-char Exchange UPN, seen live) had to be squeezed in next to both,
-// silently overflowing the line on a narrow terminal and getting
-// overwritten by the next redraw. That's what renderAccountLine below is
-// for now: its own dedicated, full-width line, so this one never has to
-// budget for an account name at all.
+// renderAppHeader is "notectl", the account context (see headerContext) in the
+// middle and the date on the right, via ui.Header: the context is dropped
+// first, then the name truncated, so a long account name never overflows.
 func (m Model) renderAppHeader(w int) string {
-	left := styleHeader.Render("notectl")
-	right := styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006"))
-	pad := w - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 1 {
-		pad = 1
-	}
-	return left + strings.Repeat(" ", pad) + right
+	return ui.Header(w, styleHeader.Render("notectl"), styleTabParentRef.Render(m.headerContext()),
+		styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006")))
 }
 
-// renderHelpBar renders the bottom help area. The key list is split across
-// two lines — it was one long line that overflowed on typical terminal
-// widths, unlike the other suite tools' shorter footers. An error/status
-// message still renders as a single line; helpBarHeight/listHeight below
-// always reserve room for 2 lines regardless, so the list above doesn't
-// shift depending on what's currently showing.
+// renderHelpBar renders the one-line footer: key hints in priority order
+// (the last ones drop first on a narrow terminal — `?` and `q` sit near the
+// front so they survive longest; the full list lives under `?`), with the
+// cursor position and sort flush right via statusbar.Line, which truncates
+// the hints and never the status or the width — an overflowing bottom row
+// would make the terminal scroll and drag everything above it out of
+// alignment (reported live as tab-row duplication after a notebook switch).
+// An error/status message replaces the hints on the same single line.
 func (m Model) renderHelpBar(w int) string {
 	right := ""
 	if len(m.notes) > 0 {
@@ -562,31 +546,25 @@ func (m Model) renderHelpBar(w int) string {
 		right = styleHelp.Render(fmt.Sprintf("%d/%d  %s", m.cursor+1, len(m.notes), sortIcon))
 	}
 	if m.err != nil {
-		return styleErr.Render("✗ " + m.err.Error())
+		return statusbar.Line(w, styleErr.Render("✗ "+m.err.Error()), "")
 	}
 	if m.status != "" {
 		if m.confirmID != "" {
-			return styleSyncing.Render("⚠ " + m.status)
+			return statusbar.Line(w, styleSyncing.Render("⚠ "+m.status), "")
 		}
-		return styleOK.Render("✓ " + m.status)
+		return statusbar.Line(w, styleOK.Render("✓ "+m.status), right)
 	}
-	// Hints are in priority order per line (the last ones drop first on a
-	// narrow terminal), and statusbar.Line keeps `right` flush right while
-	// truncating the hints — never overflowing w, which on this bottom row
-	// would make the terminal scroll and drag everything above it out of
-	// alignment (reported live as tab-row duplication after a notebook switch).
-	line1 := statusbar.Hints(w,
-		[2]string{"enter", "open"}, [2]string{"n", "new"}, [2]string{"e", "edit"}, [2]string{"d", "delete"},
-		[2]string{"u", "undo"}, [2]string{"y", "copy"}, [2]string{"S", "sort"}, [2]string{"H", "hide empty"})
-	line2 := statusbar.Hints(w-lipgloss.Width(right)-2,
-		[2]string{"s", "sync"}, [2]string{"/", "search"}, [2]string{"?", "help"}, [2]string{"q", "quit"},
-		[2]string{"o", "editor"}, [2]string{"p", "settings"}, [2]string{"tab", "notebook"}, [2]string{"l/h", "expand"})
-	return line1 + "\n" + statusbar.Line(w, line2, right)
+	hints := statusbar.Hints(w-lipgloss.Width(right)-2,
+		[2]string{"enter", "open"}, [2]string{"n", "new"}, [2]string{"?", "help"}, [2]string{"q", "quit"},
+		[2]string{"/", "search"}, [2]string{"s", "sync"}, [2]string{"e", "edit"}, [2]string{"d", "delete"},
+		[2]string{"u", "undo"}, [2]string{"y", "copy"}, [2]string{"tab", "notebook"}, [2]string{"S", "sort"},
+		[2]string{"H", "hide empty"}, [2]string{"o", "editor"}, [2]string{"p", "settings"}, [2]string{"l/h", "expand"})
+	return statusbar.Line(w, hints, right)
 }
 
 // helpBarHeight is the line budget reserved below the list for
 // renderHelpBar's output, shared with listHeight so the two can't drift.
-const helpBarHeight = 2
+const helpBarHeight = 1
 
 // doubleClickWindow opens the note detail on a second click within this
 // window, same pattern and duration taskctl uses for its own double-click.
@@ -877,11 +855,81 @@ func renderMarkdown(body string, width int) string {
 	}
 	lines := strings.Split(body, "\n")
 	lines = preprocessMarkdownTables(lines, width)
+	states := codeStates(lines)
 	var sb strings.Builder
-	for _, line := range lines {
+	prevBlank := true
+	for i, line := range lines {
+		if states[i] != notCode {
+			sb.WriteString(renderCodeBlockLine(states[i], line, width) + "\n")
+			prevBlank = false
+			continue
+		}
+		if isMDHeading(line) && !prevBlank {
+			sb.WriteString("\n") // headings are set apart from the text above
+		}
 		sb.WriteString(renderMDLine(line, width) + "\n")
+		prevBlank = strings.TrimSpace(line) == ""
 	}
 	return lipgloss.NewStyle().Width(width).Render(sb.String())
+}
+
+func isMDHeading(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "# ") || strings.HasPrefix(t, "## ") || strings.HasPrefix(t, "### ")
+}
+
+// codeState says whether a line is outside code, a ``` fence marker, or inside
+// a fenced block.
+type codeState int
+
+const (
+	notCode codeState = iota
+	fenceLine
+	codeLine
+)
+
+// codeStates marks every line of a note. Fences toggle: an unterminated block
+// runs to the end (as most renderers do), and a line with two fences on it
+// ("```code```") is an ordinary inline span, not a fence. Without this state,
+// code lines were rendered as markdown — a "# comment" became a heading — and
+// the fences themselves showed up as literal backticks.
+func codeStates(lines []string) []codeState {
+	st := make([]codeState, len(lines))
+	in := false
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "```") && strings.Count(t, "```") < 2 {
+			st[i] = fenceLine
+			in = !in
+			continue
+		}
+		if in {
+			st[i] = codeLine
+		}
+	}
+	return st
+}
+
+// styleMDCodeBlock paints code lines on a distinct surface (the suite's hover
+// background) in the code color.
+var styleMDCodeBlock = styleMDCode.Background(theme.HoverBgV2)
+
+// renderCodeBlockLine draws one line of a fenced block, padded to width so the
+// block reads as a box: fence markers become blank edge rows (the opening one
+// carries the language, dimmed), code lines are shown verbatim — no inline
+// markdown — with tabs expanded.
+func renderCodeBlockLine(st codeState, line string, width int) string {
+	pad := func(text string, st lipgloss.Style) string {
+		return st.Render(text + strings.Repeat(" ", max(width-runewidth.StringWidth(text), 0)))
+	}
+	if st == fenceLine {
+		lang := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "```"))
+		if lang == "" {
+			return pad("", styleMDCodeBlock)
+		}
+		return pad("  "+lang, styleMuted.Background(theme.HoverBgV2))
+	}
+	return pad("  "+strings.ReplaceAll(line, "\t", "    "), styleMDCodeBlock)
 }
 
 func renderMDLine(line string, width int) string {
@@ -1025,13 +1073,14 @@ func stripInlineMarkdownForWidth(s string) string {
 func preprocessMarkdownTables(lines []string, width int) []string {
 	out := make([]string, len(lines))
 	copy(out, lines)
+	states := codeStates(lines)
 	for i := 0; i < len(out); i++ {
 		t := strings.TrimSpace(out[i])
-		if strings.HasPrefix(t, "|") && strings.HasSuffix(t, "|") {
+		if states[i] == notCode && strings.HasPrefix(t, "|") && strings.HasSuffix(t, "|") {
 			end := i
 			for end < len(out) {
 				t2 := strings.TrimSpace(out[end])
-				if !(strings.HasPrefix(t2, "|") && strings.HasSuffix(t2, "|")) {
+				if states[end] != notCode || !(strings.HasPrefix(t2, "|") && strings.HasSuffix(t2, "|")) {
 					break
 				}
 				end++

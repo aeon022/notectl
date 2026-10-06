@@ -48,7 +48,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pvp = viewport.New(viewport.WithWidth(m.pvpWidth()), viewport.WithHeight(m.height-3))
 		m.bodyArea.SetWidth(m.editorBodyWidth())
 		m.bodyArea.SetHeight(m.height - 11)
-		m.ensureTabVisible()
 
 	case tea.FocusMsg:
 		// Back in the window: refresh the list from the local DB (not a
@@ -108,7 +107,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if cursor, ok := m.resolveTabCursor(restore); ok {
 				m.tabCursor = cursor
-				m.ensureTabVisible()
 				return m, tea.Batch(loadNotesCmd(m.effectiveAccount(), restore, m.activeAccount()), tea.ClearScreen)
 			}
 		}
@@ -341,7 +339,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if newCursor != m.tabCursor {
 				m.tabCursor = newCursor
-				m.ensureTabVisible()
 				m.cursor = 0
 				m.saveUIState()
 				return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
@@ -542,7 +539,6 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor + 1) % n
 		}
-		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
@@ -550,7 +546,6 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if n := len(m.tabPositions()); n > 0 {
 			m.tabCursor = (m.tabCursor - 1 + n) % n
 		}
-		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
@@ -566,11 +561,9 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if !m.isExpanded(pos.top - 1) {
 			m.setExpanded(pos.top-1, true)
-			m.ensureTabVisible()
 			return m, nil
 		}
 		m.tabCursor = m.cursorFor(pos.top, 0)
-		m.ensureTabVisible()
 		m.cursor = 0
 		m.saveUIState()
 		return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
@@ -583,14 +576,12 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if pos.sub >= 0 {
 			m.tabCursor = m.cursorFor(pos.top, -1)
-			m.ensureTabVisible()
 			m.cursor = 0
 			m.saveUIState()
 			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
 		}
 		if m.isExpanded(pos.top - 1) {
 			m.setExpanded(pos.top-1, false)
-			m.ensureTabVisible()
 		}
 		return m, nil
 	case "[", "]":
@@ -607,7 +598,6 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.accountCursor = (m.accountCursor + 1) % n
 			}
 			m.tabCursor = 0
-			m.ensureTabVisible()
 			m.cursor = 0
 			m.saveUIState()
 			return m, loadNotesCmd(m.effectiveAccount(), m.activeFolder(), m.activeAccount())
@@ -1226,6 +1216,7 @@ func renderDetailBody(body string, cursor, width int) (string, int) {
 	}
 	lines := strings.Split(body, "\n")
 	lines = preprocessMarkdownTables(lines, width)
+	states := codeStates(lines)
 
 	var sb strings.Builder
 	visualCursor := 0
@@ -1234,7 +1225,7 @@ func renderDetailBody(body string, cursor, width int) (string, int) {
 	for i, line := range lines {
 		disp := line
 		trimmedDisp := strings.TrimSpace(disp)
-		if config.Source() == config.SourceApple {
+		if config.Source() == config.SourceApple && states[i] == notCode {
 			idx := strings.IndexFunc(disp, func(r rune) bool { return r != ' ' && r != '\t' })
 			leading := ""
 			if idx > 0 {
@@ -1258,7 +1249,13 @@ func renderDetailBody(body string, cursor, width int) (string, int) {
 		}
 
 		var formatted string
-		if i == cursor {
+		if states[i] != notCode {
+			formatted = renderCodeBlockLine(states[i], disp, width)
+			if i == cursor {
+				formatted = styleSelected.Render(formatted)
+				visualCursor = currentVisualLines
+			}
+		} else if i == cursor {
 			formatted = styleSelected.Render(renderMDLine(disp, width))
 			visualCursor = currentVisualLines
 		} else if strings.HasPrefix(trimmedDisp, "☑ ") || strings.HasPrefix(trimmedDisp, "- [x] ") || strings.HasPrefix(trimmedDisp, "- [X] ") || strings.HasPrefix(trimmedDisp, "* [x] ") || strings.HasPrefix(trimmedDisp, "* [X] ") {
