@@ -8,10 +8,12 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/aeon022/missionctl-core/statusbar"
 	"github.com/aeon022/missionctl-core/ui"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -98,7 +100,7 @@ func (m *Model) setStatus(s string) {
 }
 
 func (m Model) bodyHeight() int {
-	h := m.height - 10
+	h := m.height - m.chromeLines() - 7 // header chrome, title/meta/date/linked/blank, 2-line footer
 	if h < 5 {
 		h = 5
 	}
@@ -357,4 +359,37 @@ func sameDay(a, b time.Time) bool {
 	ay, am, ad := a.Date()
 	by, bm, bd := b.Date()
 	return ay == by && am == bm && ad == bd
+}
+
+// chromeLines is the height of the header block every secondary view shares:
+// header + divider (+ a blank line in the tall tier, like the main view).
+func (m Model) chromeLines() int {
+	if m.spacious() {
+		return 3
+	}
+	return 2
+}
+
+// secondary frames a non-list view with the shared chrome — "notectl · name"
+// header (ctx in the middle, date right), divider, the body, and a one-line
+// hint footer (an error replaces the hints; right is flush right) — padded to
+// exactly m.height lines.
+func (m Model) secondary(name, ctx, body, right string, hints ...[2]string) string {
+	w := m.width - 1
+	lines := []string{
+		" " + ui.Header(w, styleHeader.Render("notectl · "+name), styleTabParentRef.Render(ctx), styleMuted.Render(time.Now().Format("Mon 02 Jan"))),
+		styleDivider.Render(strings.Repeat("─", m.width)),
+	}
+	if m.spacious() {
+		lines = append(lines, "")
+	}
+	bar := statusbar.Line(w, statusbar.Hints(w-lipgloss.Width(right)-2, hints...), right)
+	if m.err != nil {
+		bar = statusbar.Line(w, styleErr.Render("✗ "+m.err.Error()), "")
+	}
+	bl := strings.Split(body, "\n")
+	for i, l := range bl { // never let a long line wrap: that would add rows and break the constant height
+		bl[i] = ansi.Truncate(l, m.width, "…")
+	}
+	return ui.Frame(m.height, strings.Join(lines, "\n"), strings.Join(bl, "\n"), "\n "+bar)
 }

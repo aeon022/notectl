@@ -49,7 +49,7 @@ func (m Model) viewContent() string {
 		// enclosing border on the list view, so inset 0 is safe.
 		return overlay.CenterDim(m.renderList(), m.renderHelpPopup(), m.width, m.height, 0)
 	case viewTags:
-		return overlay.Center(m.renderList(), m.renderTags(), m.width, m.height, 0)
+		return overlay.CenterDim(m.renderList(), m.renderTags(), m.width, m.height, 0)
 	case viewGraph:
 		return m.renderGraph()
 	default:
@@ -59,26 +59,30 @@ func (m Model) viewContent() string {
 
 func (m Model) renderTags() string {
 	tags := allTags(m.allNotes)
-	var b strings.Builder
-	b.WriteString(styleHeader.Render("Tags") + "\n\n")
+	w := min(50, m.width-4)
+	var rows []string
 	if len(tags) == 0 {
-		b.WriteString(styleHelp.Render("No tagged notes yet.") + "\n")
+		rows = append(rows, styleHelp.Render("No tagged notes yet."))
 	}
-	for i, t := range tags {
-		row := fmt.Sprintf("#%s  (%d)", t.name, t.count)
+	// window the list around the cursor so a long tag list never outgrows the screen
+	room := max(3, m.height-8)
+	start := 0
+	if m.tagCursor >= room {
+		start = m.tagCursor - room + 1
+	}
+	for i := start; i < len(tags) && i < start+room; i++ {
+		row := fmt.Sprintf("#%s  (%d)", tags[i].name, tags[i].count)
 		if i == m.tagCursor {
-			b.WriteString(styleSelected.Render("› "+row) + "\n")
+			rows = append(rows, styleSelected.Render("› "+row))
 		} else {
-			b.WriteString("  " + row + "\n")
+			rows = append(rows, "  "+row)
 		}
 	}
-	b.WriteString("\n" + styleHelp.Render("j/k move  enter filter by tag  esc/q close"))
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorBlue).
-		Padding(1, 2).
-		Width(min(50, m.width-4)).
-		Render(b.String())
+	rows = append(rows, "", statusbar.Hints(w-4, [2]string{"esc", "close"}, [2]string{"j/k", "move"}, [2]string{"enter", "filter"}))
+	for i := range rows {
+		rows[i] = " " + rows[i]
+	}
+	return ui.Panel(w, len(rows)+2, "Tags", strings.Join(rows, "\n"), true)
 }
 
 // renderGraph draws the link-graph explorer: the focus note centered, its
@@ -90,8 +94,6 @@ func (m Model) renderGraph() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n  " + styleHeader.Render("Link Graph") + "\n\n")
-
 	cursor := 0
 	renderNeighbor := func(n models.Note, arrow string) {
 		row := arrow + " " + n.Title
@@ -119,8 +121,8 @@ func (m Model) renderGraph() string {
 		renderNeighbor(n, "◀──")
 	}
 
-	b.WriteString("\n" + styleHelp.Render("j/k move  enter re-focus graph here  d open note  esc/q back"))
-	return b.String()
+	return m.secondary("Link Graph", m.graphFocus.Title, b.String(), "",
+		[2]string{"esc", "back"}, [2]string{"j/k", "move"}, [2]string{"enter", "re-focus"}, [2]string{"d", "open note"})
 }
 
 func (m Model) helpContent() string {
@@ -169,7 +171,7 @@ func (m Model) openHelp() Model {
 		popW = 40
 	}
 
-	vp := viewport.New(viewport.WithWidth(popW-6), viewport.WithHeight(popH-5)) // border 1+1, padding(1,2) → 2 rows/4 cols; -1 row for footer
+	vp := viewport.New(viewport.WithWidth(popW-4), viewport.WithHeight(popH-3)) // ui.Panel border → 2 rows/cols, 1-col side margin, -1 row for footer
 	vp.SetContent(m.helpContent())
 
 	m.helpVP = vp
@@ -187,13 +189,11 @@ func (m Model) renderHelpPopup() string {
 	if m.helpVP.TotalLineCount() > m.helpVP.Height() {
 		footer = fmt.Sprintf("j/k scroll (%d%%)  ·  %s", int(m.helpVP.ScrollPercent()*100), footer)
 	}
-	body := m.helpVP.View() + "\n" + styleHelp.Render(footer)
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorBlue).
-		Padding(1, 2).
-		Width(m.helpPopW).
-		Render(body)
+	lines := append(strings.Split(m.helpVP.View(), "\n"), styleHelp.Render(footer))
+	for i := range lines {
+		lines[i] = " " + lines[i]
+	}
+	return ui.Panel(m.helpPopW, m.helpPopH, "Help", strings.Join(lines, "\n"), true)
 }
 
 func (m Model) renderList() string {
@@ -583,7 +583,6 @@ func (m Model) renderDetail() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n")
 	b.WriteString(detailLeftPad + styleBold.Render(m.detail.Title) + "\n")
 	meta := ""
 	if m.detail.Folder != "" {
@@ -604,19 +603,16 @@ func (m Model) renderDetail() string {
 		b.WriteString(detailLeftPad + styleMuted.Render("Linked from: ") + styleTag.Render(strings.Join(names, ", ")) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 	m.vp.SetWidth(m.detailBodyWidth())
 	m.vp.SetHeight(m.bodyHeight())
 	b.WriteString(renderScrollbar(m.vp, detailLeftPad))
 	pct := ""
 	if m.vp.TotalLineCount() > m.vp.Height() {
-		pct = fmt.Sprintf(" %d%%", int(m.vp.ScrollPercent()*100))
+		pct = fmt.Sprintf("%d%%", int(m.vp.ScrollPercent()*100))
 	}
-	hints := statusbar.Hints(m.width-lipgloss.Width(detailLeftPad)-lipgloss.Width(pct),
+	return m.secondary("Note", m.headerContext(), b.String(), styleMuted.Render(pct),
 		[2]string{"esc", "back"}, [2]string{"e", "edit"}, [2]string{"q", "quit"}, [2]string{"d", "delete"},
 		[2]string{"o", "notes"}, [2]string{"L", "link graph"}, [2]string{"j/k", "scroll"}, [2]string{"space", "toggle checkbox"})
-	b.WriteString("\n\n" + detailLeftPad + hints + styleMuted.Render(pct))
-	return b.String()
 }
 
 // backlinksFor returns every note in all whose body references target via
@@ -737,16 +733,13 @@ func renderScrollbar(vp viewport.Model, leftPad string) string {
 }
 
 func (m Model) renderNew() string {
-	title := "New Note"
+	name, ctx := "New Note", ""
 	if m.editNote != nil {
-		title = "Edit: " + m.editNote.Title
+		name, ctx = "Edit Note", m.editNote.Title
 	}
 	leftW := m.editorLeftWidth()
 
 	var b strings.Builder
-	b.WriteString(styleHeader.Render(title) + "\n")
-	b.WriteString(styleDivider.Render(strings.Repeat("─", leftW)) + "\n\n")
-
 	focus := func(i int) string {
 		if m.newFocus == i {
 			return styleTabActive.Render("›")
@@ -758,51 +751,40 @@ func (m Model) renderNew() string {
 	b.WriteString(focus(1) + " " + styleLabel.Render("Tags:") + "   " + m.tagsInput.View() + "\n\n")
 	b.WriteString(focus(2) + " " + styleLabel.Render("Body:") + "\n")
 	b.WriteString(m.bodyArea.View() + "\n")
-	b.WriteString(styleMuted.Render("  # heading  - list  - [ ] checklist  **bold**  *italic*  ~~strike~~  `code`") + "\n\n")
+	b.WriteString(styleMuted.Render("  # heading  - list  - [ ] checklist  **bold**  *italic*  ~~strike~~  `code`"))
+	body := b.String()
 
-	if m.err != nil {
-		b.WriteString(styleErr.Render("✗ " + m.err.Error()))
-	} else {
-		b.WriteString(styleHelp.Render("tab:next  ctrl+s:save  esc:cancel"))
-	}
-	if !m.isTwoPane() {
-		return b.String()
-	}
-
-	// ── live preview pane (wide terminals) ──
-	rightW := m.editorPvpWidth()
-	rightLines := []string{styleMuted.Render(" Preview"), ""}
-	rightLines = append(rightLines, strings.Split(renderMarkdown(m.bodyArea.Value(), rightW-1), "\n")...)
-	leftLines := strings.Split(b.String(), "\n")
-	div := styleDivider.Render("│")
-	rows := max(len(leftLines), len(rightLines))
-	if rows > m.height {
-		rows = m.height
-	}
-	var out strings.Builder
-	for i := 0; i < rows; i++ {
-		l := ""
-		if i < len(leftLines) {
-			l = leftLines[i]
+	if m.isTwoPane() {
+		// ── live preview pane (wide terminals) ──
+		rightW := m.editorPvpWidth()
+		rightLines := []string{styleMuted.Render(" Preview"), ""}
+		rightLines = append(rightLines, strings.Split(renderMarkdown(m.bodyArea.Value(), rightW-1), "\n")...)
+		leftLines := strings.Split(body, "\n")
+		div := styleDivider.Render("│")
+		rows := max(len(leftLines), len(rightLines))
+		var out []string
+		for i := 0; i < rows; i++ {
+			l := ""
+			if i < len(leftLines) {
+				l = leftLines[i]
+			}
+			r := ""
+			if i < len(rightLines) {
+				r = " " + rightLines[i]
+			}
+			if lW := lipgloss.Width(l); lW < leftW {
+				l += strings.Repeat(" ", leftW-lW)
+			}
+			out = append(out, l+div+r)
 		}
-		r := ""
-		if i < len(rightLines) {
-			r = " " + rightLines[i]
-		}
-		if lW := lipgloss.Width(l); lW < leftW {
-			l += strings.Repeat(" ", leftW-lW)
-		}
-		out.WriteString(l + div + r + "\n")
+		body = strings.Join(out, "\n")
 	}
-	return strings.TrimRight(out.String(), "\n")
+	return m.secondary(name, ctx, body, "",
+		[2]string{"esc", "cancel"}, [2]string{"ctrl+s", "save"}, [2]string{"tab", "next field"})
 }
 
 func (m Model) renderSettings() string {
-	w := min(m.width, 100)
 	var b strings.Builder
-
-	b.WriteString(styleHeader.Render("notectl") + "  " + styleMuted.Render("Settings") + "\n")
-	b.WriteString(styleDivider.Render(strings.Repeat("─", w)) + "\n\n")
 
 	// Vault path only means anything for Obsidian/Markdown — showing it for
 	// Apple or Joplin was misleading (it looked editable/relevant when it
@@ -846,9 +828,8 @@ func (m Model) renderSettings() string {
 	} else if m.status != "" {
 		b.WriteString(styleOK.Render("✓ "+m.status) + "\n")
 	}
-
-	b.WriteString("\n" + styleHelp.Render("←/→:source  ctrl+s:save  esc:cancel"))
-	return b.String()
+	return m.secondary("Settings", "", b.String(), "",
+		[2]string{"esc", "cancel"}, [2]string{"ctrl+s", "save"}, [2]string{"←/→", "source"})
 }
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────

@@ -18,15 +18,20 @@ import (
 // move the cursor manually — textarea repositions its viewport on any Update.
 type editorSyncMsg struct{}
 
-// Layout rows in renderNew: 0 header, 1 divider, 2 blank, 3 title, 4 tags,
-// 5 blank, 6 body label, 7… body textarea.
+// Layout rows in renderNew, below the shared chrome (chromeLines): title,
+// tags, blank, body label, then the body textarea.
 const (
-	editorTitleRow = 3
-	editorTagsRow  = 4
-	editorBodyTop  = 7
 	// textarea prompt "┃ " rendered before each body line
 	editorPromptW = 2
 )
+
+func (m Model) editorTitleRow() int { return m.chromeLines() }
+func (m Model) editorTagsRow() int  { return m.chromeLines() + 1 }
+func (m Model) editorBodyTop() int  { return m.chromeLines() + 4 }
+
+// editorBodyHeight is the textarea height: what is left under the chrome, the
+// 4 field rows above, the syntax hint and the 2-line footer.
+func (m Model) editorBodyHeight() int { return max(3, m.height-m.chromeLines()-7) }
 
 // handleEditorClick focuses the field under a left click; clicks on the body
 // also move the cursor to the clicked position.
@@ -35,21 +40,21 @@ func (m Model) handleEditorClick(x, y int) Model {
 		return m // click landed in the preview pane
 	}
 	switch {
-	case y == editorTitleRow:
+	case y == m.editorTitleRow():
 		m.blurNew(m.newFocus)
 		m.newFocus = 0
 		m.focusNew(0)
-	case y == editorTagsRow:
+	case y == m.editorTagsRow():
 		m.blurNew(m.newFocus)
 		m.newFocus = 1
 		m.focusNew(1)
-	case y >= editorBodyTop && y < editorBodyTop+m.bodyArea.Height():
+	case y >= m.editorBodyTop() && y < m.editorBodyTop()+m.bodyArea.Height():
 		if m.newFocus != 2 {
 			m.blurNew(m.newFocus)
 			m.newFocus = 2
 			m.focusNew(2)
 		}
-		m = m.moveEditorCursorTo(y-editorBodyTop, x-editorPromptW)
+		m = m.moveEditorCursorTo(y-m.editorBodyTop(), x-editorPromptW)
 	}
 	return m
 }

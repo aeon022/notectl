@@ -47,7 +47,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp = viewport.New(viewport.WithWidth(msg.Width), viewport.WithHeight(m.bodyHeight()))
 		m.pvp = viewport.New(viewport.WithWidth(m.pvpWidth()), viewport.WithHeight(m.height-3))
 		m.bodyArea.SetWidth(m.editorBodyWidth())
-		m.bodyArea.SetHeight(m.height - 11)
+		m.bodyArea.SetHeight(m.editorBodyHeight())
 
 	case tea.FocusMsg:
 		// Back in the window: refresh the list from the local DB (not a
