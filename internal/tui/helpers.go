@@ -8,9 +8,12 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/aeon022/missionctl-core/theme"
+	"github.com/aeon022/missionctl-core/ui"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -119,21 +122,57 @@ func (m Model) detailBodyWidth() int {
 // view (header fields and scrollable body alike).
 const detailLeftPad = "  "
 
-// formatNoteRow builds a note list row. rowStyle carries the selected-row
-// treatment (background+foreground+bold) and is applied directly to the
-// title segment — NOT via an outer Render() wrapping the whole composed
-// row. That used to be how this worked (the caller wrapped the return
-// value in styleSelected.Width(w).Render(...)), and it was broken the same
-// way as an equivalent bug found and fixed in mailctl: dateStyled/meta
-// below carry their OWN independent colors, and lipgloss's Render() ends
-// every string with a full SGR reset — the first inner segment's reset
-// clobbered the outer wrap's style for everything after it, so a selected
-// row's highlight background didn't extend past the date column. Fixed by
-// applying rowStyle per-segment instead, which also makes it safe to
-// highlight fuzzy matches here even on the selected row.
-func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query string) string {
-	dateStr := smartDate(n.ModTime)
-	dateStyled := coloredDate(dateStr, n.ModTime) // independent color, unaffected by rowStyle
+// rowMode says how a list row is highlighted.
+type rowMode int
+
+const (
+	rowNormal rowMode = iota
+	rowSelected
+	rowHover
+)
+
+// styledRow wraps row content in the 2-column gutter and the row highlight:
+// selected = accent bar + one continuous full-width background (ui.Row repaints
+// the background after every inner color, and lifts dimmed text to Muted so it
+// stays readable on it); hover = the same width in the hover background.
+func styledRow(width int, mode rowMode, content string) string {
+	switch mode {
+	case rowSelected:
+		return ui.Row(width, true, content)
+	case rowHover:
+		inner := max(width-2, 0)
+		plain := ansi.Truncate(ansi.Strip(content), inner, "…")
+		return "  " + theme.HoverV2.Render(plain+strings.Repeat(" ", max(inner-lipgloss.Width(plain), 0)))
+	}
+	return ui.Row(width, false, content)
+}
+
+// shortFolder fits a folder path into budget cells, keeping the END of the
+// path (the part that tells notebooks apart): "Change-Management/Howtos/KI"
+// -> "…/Howtos/KI" -> "…/KI" -> mid-ellipsis of the last segment.
+func shortFolder(folder string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(folder) <= budget {
+		return folder
+	}
+	segs := strings.Split(folder, "/")
+	for k := 1; k < len(segs); k++ { // drop as few leading segments as possible
+		if c := "…/" + strings.Join(segs[k:], "/"); runewidth.StringWidth(c) <= budget {
+			return c
+		}
+	}
+	return ui.MidEllipsis(segs[len(segs)-1], budget)
+}
+
+// noteRowContent builds the unhighlighted content of a note row in exactly
+// width cells: age-colored date, title, then the notebook (dimmed, shortened
+// from the left) and first tag. The title gets everything the meta doesn't
+// need, and the folder is capped to about a quarter of the row so it can't
+// crowd the title out.
+func noteRowContent(n *models.Note, width int, query string) string {
+	dateStyled := coloredDate(smartDate(n.ModTime), n.ModTime)
 
 	title := n.Title
 	if idx := strings.Index(title, "\n"); idx >= 0 {
@@ -141,60 +180,44 @@ func formatNoteRow(n *models.Note, width int, rowStyle lipgloss.Style, query str
 	}
 	title = strings.TrimSpace(title)
 
-	// Reserve the title's 6-char floor first, then give folder/tag meta
-	// whatever's left, truncating each to fit — the other way around (meta
-	// rendered at full length, title floored to 6 regardless of what that
-	// left) let a long folder/tag on a narrow terminal push the row past
-	// `width` altogether, since nothing here ever shrank meta back down.
-	// That overflow broke the two-pane divider's alignment (row + " │ " +
-	// preview) once row exceeded its column budget.
-	// Truncation and padding both measure with the same yardstick
-	// (runewidth/lipgloss.Width) throughout this function, deliberately —
-	// an earlier version truncated conservatively (assuming an ambiguous-
-	// width rune like a dash might render one column wider than measured,
-	// see pessimisticWidth) but then padded against the plain, narrower
-	// measurement. That mismatch meant a row's actual on-screen width
-	// silently depended on whether its title happened to contain such a
-	// rune — most did — so two rows padded to the "same" width landed at
-	// different real columns, and the two-pane "│" divider came out jagged
-	// instead of a straight line (reported live, and worse in practice
-	// than the theoretical overflow the mismatch was trying to prevent).
-	// Consistent measurement can't simultaneously guarantee zero overflow
-	// on a terminal that renders such a rune wide — but it does guarantee
-	// every row lands at the exact same column, which is what actually
-	// matters here.
-	meta := "" // independent colors (folder/tag), unaffected by rowStyle
-	metaBudget := width - 16 - 6
+	// Truncation and padding use the same yardstick (runewidth/lipgloss.Width)
+	// throughout, deliberately: mixing a conservative truncation measure with a
+	// plain pad measure made rows land at different real columns depending on
+	// whether a title held an ambiguous-width rune (a jagged two-pane divider).
+	meta := ""
+	metaBudget := width - 16 - 6 // the title keeps a 6-cell floor
 	if n.Folder != "" && metaBudget > 1 {
-		folder := runewidth.Truncate(" "+n.Folder, metaBudget, "…")
-		meta += styleFolder.Render(folder)
+		// a quarter of the row at least; a short title leaves more room, so the
+		// notebook path stays whole where it fits
+		cap := min(metaBudget, max(width/4, 14, width-16-runewidth.StringWidth(title)-1))
+		folder := " " + shortFolder(n.Folder, cap-1)
+		meta += styleMuted.Render(folder)
 		metaBudget -= runewidth.StringWidth(folder)
 	}
 	if len(n.Tags) > 0 && metaBudget > 1 {
 		tag := runewidth.Truncate(" #"+n.Tags[0], metaBudget, "…")
 		meta += styleTag.Render(tag)
 	}
-	metaW := lipgloss.Width(meta)
-	titleW := width - 16 - metaW
-	if titleW < 6 {
-		titleW = 6
-	}
+	titleW := max(width-16-lipgloss.Width(meta), 6)
 
 	matchIdx := fuzzyMatchIndexes(query, title)
 	titleTrunc := runewidth.Truncate(title, titleW, "…")
-	titleStyled := highlightMatches(titleTrunc, matchIdx, rowStyle)
+	titleStyled := highlightMatches(titleTrunc, matchIdx, lipgloss.NewStyle())
 	if pad := titleW - runewidth.StringWidth(titleTrunc); pad > 0 {
-		titleStyled += rowStyle.Render(strings.Repeat(" ", pad))
+		titleStyled += strings.Repeat(" ", pad)
 	}
 
-	row := dateStyled + rowStyle.Render("  ") + titleStyled + meta
-
-	// Pad to full width with rowStyle so a selected row's background spans
-	// the whole line, not just up to the last character of content.
+	row := dateStyled + "  " + titleStyled + meta
 	if pad := width - lipgloss.Width(row); pad > 0 {
-		row += rowStyle.Render(strings.Repeat(" ", pad))
+		row += strings.Repeat(" ", pad)
 	}
 	return row
+}
+
+// formatNoteRow builds a note list row of exactly width cells: a 2-column
+// gutter (accent bar when selected) plus noteRowContent.
+func formatNoteRow(n *models.Note, width int, mode rowMode, query string) string {
+	return styledRow(width, mode, noteRowContent(n, max(width-2, 1), query))
 }
 
 func coloredDate(s string, t time.Time) string {

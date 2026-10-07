@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/store"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/mattn/go-runewidth"
 )
 
 // withAppleSource temporarily makes config.Source() return SourceApple,
@@ -416,35 +418,72 @@ func TestSearchMode_FiltersLiveAsUserTypes(t *testing.T) {
 }
 
 func TestFormatNoteRow_SelectedBackgroundSpansFullWidth(t *testing.T) {
-	// Regression test: formatNoteRow used to be built plain, then the
-	// WHOLE composed row was wrapped in one outer styleSelected.Width(w).
-	// Render() call at the caller. dateStyled/meta below carry their own
-	// independent colors, and each one's Render() ends with a full SGR
-	// reset — which clobbered the outer style for everything after it
-	// (same bug class found and fixed in mailctl). Confirmed empirically
-	// with a forced ANSI profile that the selected background did not
-	// extend past the date column. Now applied per-segment instead.
-
-	n := models.Note{Title: "hello", ModTime: time.Now()}
-	row := formatNoteRow(&n, 60, styleSelected, "")
+	// The selection must be ONE continuous bar: every cell after the accent
+	// bar carries the background — including the date column and the folder
+	// meta, which have their own independent colors. (It used to cover only
+	// the title cell, leaving holes around it.)
+	n := models.Note{Title: "hello", Folder: "Change-Management/Howtos", Tags: []string{"x"}, ModTime: time.Now()}
+	row := formatNoteRow(&n, 60, rowSelected, "")
 	if lipgloss.Width(row) != 60 {
 		t.Errorf("expected the rendered row to be exactly 60 columns wide, got %d", lipgloss.Width(row))
 	}
+	covered, total := bgCoverage(row)
+	if total != 60-1 || covered != total {
+		t.Errorf("selected row: %d of %d cells after the accent bar have a background, want all", covered, total)
+	}
+	if c, _ := bgCoverage(formatNoteRow(&n, 60, rowNormal, "")); c != 0 {
+		t.Errorf("an unselected row must have no background cells, got %d", c)
+	}
+}
 
-	openCode := strings.SplitN(styleSelected.Render("x"), "x", 2)[0]
-	lastOpen := strings.LastIndex(row, openCode)
-	if lastOpen == -1 {
-		t.Fatal("expected to find the selected style's escape code in the row at all")
+// bgCoverage walks the SGR stream of a rendered line and counts the printed
+// cells (after the first one — the accent bar) that have a background set.
+func bgCoverage(line string) (covered, total int) {
+	bg := false
+	i, first := 0, true
+	for i < len(line) {
+		if line[i] == 0x1b && i+1 < len(line) && line[i+1] == '[' {
+			j := strings.IndexByte(line[i:], 'm')
+			if j < 0 {
+				break
+			}
+			params := strings.Split(line[i+2:i+j], ";")
+			for k := 0; k < len(params); k++ {
+				switch p := params[k]; {
+				case p == "" || p == "0" || p == "49":
+					bg = false
+				case p == "48":
+					bg = true
+					if k+1 < len(params) && params[k+1] == "5" {
+						k += 2
+					} else if k+1 < len(params) && params[k+1] == "2" {
+						k += 4
+					}
+				case len(p) == 2 && p[0] == '4' && p[1] >= '0' && p[1] <= '7', len(p) == 3 && strings.HasPrefix(p, "10"):
+					bg = true
+				case p == "38":
+					if k+1 < len(params) && params[k+1] == "5" {
+						k += 2
+					} else if k+1 < len(params) && params[k+1] == "2" {
+						k += 4
+					}
+				}
+			}
+			i += j + 1
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		i += size
+		if first {
+			first = false
+			continue
+		}
+		total += runewidth.RuneWidth(r)
+		if bg {
+			covered += runewidth.RuneWidth(r)
+		}
 	}
-	// lipgloss v2 emits "\x1b[m" (no "0") for a reset, not v1's "\x1b[0m".
-	after := strings.TrimSuffix(row[lastOpen+len(openCode):], "\x1b[m")
-	after = strings.TrimSuffix(after, "\x1b[0m")
-	if after == "" {
-		t.Error("expected trailing padding spaces after the last styled segment")
-	}
-	if strings.TrimSpace(after) != "" {
-		t.Errorf("expected only whitespace (padding) after the last styled segment, got %q", after)
-	}
+	return covered, total
 }
 
 func TestFormatNoteRow_LongFolderNeverOverflowsWidth(t *testing.T) {
@@ -463,7 +502,7 @@ func TestFormatNoteRow_LongFolderNeverOverflowsWidth(t *testing.T) {
 		ModTime: time.Now(),
 	}
 	for _, w := range []int{40, 60, 100} {
-		row := formatNoteRow(&n, w, styleSelected, "")
+		row := formatNoteRow(&n, w, rowSelected, "")
 		if got := lipgloss.Width(row); got != w {
 			t.Errorf("width %d: expected rendered row to be exactly %d columns, got %d", w, w, got)
 		}
@@ -497,8 +536,8 @@ func TestFormatNoteRow_ConsistentWidthRegardlessOfAmbiguousRunes(t *testing.T) {
 		ModTime: time.Now(),
 	}
 	for _, w := range []int{40, 60, 100} {
-		gotDash := lipgloss.Width(formatNoteRow(&withDash, w, styleSelected, ""))
-		gotPlain := lipgloss.Width(formatNoteRow(&plain, w, styleSelected, ""))
+		gotDash := lipgloss.Width(formatNoteRow(&withDash, w, rowSelected, ""))
+		gotPlain := lipgloss.Width(formatNoteRow(&plain, w, rowSelected, ""))
 		if gotDash != w {
 			t.Errorf("width %d: row with ambiguous-width runes rendered at %d columns, want exactly %d", w, gotDash, w)
 		}

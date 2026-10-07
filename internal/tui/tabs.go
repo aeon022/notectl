@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/aeon022/missionctl-core/humanize"
@@ -470,46 +471,103 @@ func (m Model) subLabels(top string) []string {
 	return labels
 }
 
-// tabRow1Suffix is row 1's trailing sync-status text ("  syncing…" or
-// "  synced 3m ago") — split out so both renderTabRow1 and ensureTabVisible
-// budget the same width for it. It used to be appended after tabWindow had
-// already filled the row with as many tabs as fit *w*, with nothing held
-// back for it — whenever the tabs alone came close to w, the suffix pushed
-// the whole row past it and overflowed. Worse, its length changes on its
-// own as time passes ("synced 9m ago" -> "synced 10m ago") or a sync
-// finishes ("syncing…" -> "synced just now"), independent of any tab or
-// terminal-size change, so the row could silently start overflowing on a
-// completely idle screen. Once it wrapped in the real terminal, the next
-// redraw overwrote the wrong physical row underneath it — reported live as
-// two different "synced ... ago" timestamps visible stacked on screen at
-// once, staying that way until the next full relaunch.
-func (m Model) tabRow1Suffix() string {
-	if m.syncing {
-		return "  " + m.sp.View() + styleSyncing.Render(" syncing…")
+// ── Header chrome tiers ───────────────────────────────────────────────────────
+//
+// Two layouts, chosen by height (m.height is the terminal height minus the
+// one reserve row set in the WindowSizeMsg handler, hence 29 for "30 rows"):
+//
+//	spacious (>= 30 rows)         compact (< 30 rows)
+//	  header                        header
+//	  ──────────                    Notebooks tabs
+//	  (blank)                       [Folders chips]
+//	  Notebooks  tabs               ──────────
+//	  [Folders   chips]
+//	  (blank)
+//
+// chrome() is the single source of truth for which screen row holds what, so
+// the renderer, listStartY and the click tests can't drift apart.
+
+const spaciousMinHeight = 29
+
+func (m Model) spacious() bool { return m.height >= spaciousMinHeight }
+
+// rowLabelW is the width of the dim "Notebooks"/"Folders" row label (spacious
+// tier only) — both labels are padded to it so the chips line up.
+const rowLabelW = 11
+
+func (m Model) rowLabelW() int {
+	if m.spacious() {
+		return rowLabelW
 	}
-	if !m.lastSynced.IsZero() {
-		return "  " + styleMuted.Render("synced "+humanize.TimeAgo(m.lastSynced))
-	}
-	return ""
+	return 0
 }
 
-// tabHit is the column span [x, x+w) of one visible row-1 tab.
+func rowLabel(name string) string { return styleMuted.Render(fmt.Sprintf("%-*s", rowLabelW, name)) }
+
+// hasFolderRow reports whether the active notebook is expanded and has
+// sub-folders, i.e. the Folders row exists.
+func (m Model) hasFolderRow() bool {
+	pos := m.currentPos()
+	return pos.top > 0 && pos.top <= len(m.topFolders) && m.isExpanded(pos.top-1) && len(m.activeChildren()) > 0
+}
+
+type chrome struct {
+	tabsY, foldersY int // screen rows; foldersY is -1 without a Folders row
+	rows            int // lines above the list pane
+}
+
+func (m Model) chrome() chrome {
+	folders := m.hasFolderRow()
+	if m.spacious() {
+		c := chrome{tabsY: 3, foldersY: -1, rows: 5} // header, divider, blank, tabs, blank
+		if folders {
+			c.foldersY, c.rows = 4, 6
+		}
+		return c
+	}
+	c := chrome{tabsY: 1, foldersY: -1, rows: 3} // header, tabs, divider
+	if folders {
+		c.foldersY, c.rows = 2, 4
+	}
+	return c
+}
+
+// syncStatus is the sync text shown in the footer ("syncing…" / "synced 3m
+// ago"), amber once the last sync is over a day old. It used to share row 1
+// with the tabs, which squeezed both.
+func (m Model) syncStatus() string {
+	if m.syncing {
+		return m.sp.View() + styleSyncing.Render(" syncing…")
+	}
+	if m.lastSynced.IsZero() {
+		return ""
+	}
+	txt := "synced " + humanize.TimeAgo(m.lastSynced)
+	if time.Since(m.lastSynced) > 24*time.Hour {
+		return styleSyncing.Render(txt)
+	}
+	return styleMuted.Render(txt)
+}
+
+// tabHit is the column span [x, x+w) of one visible tab or folder chip,
+// relative to the start of its row text (the caller's 1-column margin is not
+// included).
 type tabHit struct{ idx, x, w int }
 
-// tabBar draws row 1 with ui.Tabs (active pill, others dimmed, count after
-// the name; tabs far from the active one fold into "…") plus the sync suffix,
-// within w columns, and works out where each visible tab sits — by finding its
+// tabBar draws the Notebooks row with ui.Tabs (active pill, others dimmed,
+// count after the name; tabs far from the active one fold into "…") within w
+// columns, and works out where each visible tab sits by finding its
 // " label count " cell in the plain text. ui.Tabs only drops tabs from the
 // ends, so the visible ones are contiguous around the active tab. Shared by
 // renderTabRow1 and tabHitTest so drawing and clicking can't drift apart.
 func (m Model) tabBar(w int) (string, []tabHit) {
-	suffix := m.tabRow1Suffix()
-	tabsW := w - lipgloss.Width(suffix)
-	if tabsW < 10 { // barely room for tabs: drop the suffix rather than overflow
-		suffix, tabsW = "", w
+	lw := m.rowLabelW()
+	label := ""
+	if lw > 0 {
+		label = rowLabel("Notebooks")
 	}
 	labels, counts, active := m.topLabels(), m.topCounts(), m.currentPos().top
-	bar := ui.Tabs(max(tabsW, 1), labels, active, counts)
+	bar := ui.Tabs(max(w-lw, 1), labels, active, counts)
 	plain := ansi.Strip(bar)
 	seg := func(i int) string {
 		if counts[i] > 0 {
@@ -517,11 +575,11 @@ func (m Model) tabBar(w int) (string, []tabHit) {
 		}
 		return " " + labels[i] + " "
 	}
-	col := func(byteIdx int) int { return runewidth.StringWidth(plain[:byteIdx]) }
+	col := func(byteIdx int) int { return lw + runewidth.StringWidth(plain[:byteIdx]) }
 
 	at := strings.Index(plain, seg(active))
 	if at < 0 {
-		return bar + suffix, nil
+		return label + bar, nil
 	}
 	hits := []tabHit{{active, col(at), runewidth.StringWidth(seg(active))}}
 	for end, j := at+len(seg(active)), active+1; j < len(labels); j++ { // right neighbours
@@ -540,7 +598,7 @@ func (m Model) tabBar(w int) (string, []tabHit) {
 		start -= 1 + len(sg)
 		hits = append(hits, tabHit{j, col(start), runewidth.StringWidth(sg)})
 	}
-	return bar + suffix, hits
+	return label + bar, hits
 }
 
 func (m Model) renderTabRow1(w int) string {
@@ -548,91 +606,90 @@ func (m Model) renderTabRow1(w int) string {
 	return bar
 }
 
-// subTabPrefix renders the "<Parent> › " lead-in that opens row 2 — naming
-// the parent explicitly (rather than a bare arrow) so it's unambiguous
-// which notebook row 2 belongs to even when row 1 has scrolled and the
-// parent tab itself isn't visible anymore.
+// subTabPrefix renders the "<Parent> › " lead-in of the Folders row — naming
+// the parent explicitly so it's unambiguous which notebook the chips belong
+// to even when the Notebooks row has scrolled and the parent isn't visible.
 func subTabPrefix(top string) string {
 	return styleTabParentRef.Render(top) + styleMuted.Render(" › ")
 }
 
-// renderTabRow2 renders the active top-level notebook's children, if any —
-// callers should skip this row entirely (and the extra line it costs, see
-// listStartY) when it returns "". Deliberately plain text rather than the
-// filled pill style row 1 uses: row 1 is few, fixed, always-there
-// destinations, while row 2's contents change with every parent and read
-// better as a lightweight breadcrumb than as another row of buttons. No
-// independent scrolling: sub-notebook counts are expected to stay small, so
-// overflow just truncates with an ellipsis rather than growing a second
-// scroll mechanism.
-func (m Model) renderTabRow2(w int) string {
+// folderBar draws the Folders row — the active top-level notebook's children
+// as plain chips (current one accent, others dimmed) — within w columns, and
+// the column span of each visible chip. "" when there is no Folders row.
+// Overflow just truncates with an ellipsis: sub-notebook counts are small, so
+// no second scroll mechanism.
+func (m Model) folderBar(w int) (string, []tabHit) {
+	if !m.hasFolderRow() {
+		return "", nil
+	}
 	pos := m.currentPos()
-	if pos.top == 0 || pos.top > len(m.topFolders) || !m.isExpanded(pos.top-1) {
-		return ""
-	}
-	kids := m.activeChildren()
-	if len(kids) == 0 {
-		return ""
-	}
 	top := m.topFolders[pos.top-1]
+	label := ""
+	if lw := m.rowLabelW(); lw > 0 {
+		label = rowLabel("Folders")
+	}
+	if label != "" {
+		label += " " // the Notebooks pills are padded by one cell; line the chips up under their text
+	}
 	prefix := subTabPrefix(m.topFolderLabel(pos.top - 1))
-	labels := m.subLabels(top)
-	var parts []string
-	total := lipgloss.Width(prefix)
-	for i, l := range labels {
+	x := lipgloss.Width(label) + lipgloss.Width(prefix)
+	var b strings.Builder
+	var hits []tabHit
+	for i, l := range m.subLabels(top) {
 		style := styleSubInact
 		if i == pos.sub {
 			style = styleSubActive
 		}
-		rendered := style.Render(l)
-		ww := lipgloss.Width(rendered) + 2
-		if total+ww > w && len(parts) > 0 {
-			parts = append(parts, styleMuted.Render("…"))
+		r := style.Render(l)
+		ww := lipgloss.Width(r)
+		sep := 0
+		if i > 0 {
+			sep = 2
+		}
+		if x+sep+ww > w && len(hits) > 0 {
+			b.WriteString(styleMuted.Render("  …"))
 			break
 		}
-		total += ww
-		parts = append(parts, rendered)
+		b.WriteString(strings.Repeat(" ", sep))
+		x += sep
+		hits = append(hits, tabHit{i, x, ww})
+		b.WriteString(r)
+		x += ww
 	}
-	return "  " + prefix + strings.Join(parts, "  ")
+	return ansi.Truncate(label+prefix+b.String(), w, "…"), hits
+}
+
+func (m Model) renderTabRow2(w int) string {
+	row, _ := m.folderBar(w)
+	return row
 }
 
 // tabHitTest returns which tab a mouse click landed on: row 0 for the
-// top-level bar (index into m.topFolders+1, "All" is 0), row 1 for the
-// sub-notebook bar (index into the active top-level notebook's children).
-// row is -1 if the click missed both.
+// Notebooks row (index into m.topFolders+1, "All" is 0), row 1 for the
+// Folders row (index into the active notebook's children). row is -1 if the
+// click missed both. Both rows are drawn after a 1-column margin.
 func (m Model) tabHitTest(x, y int) (row, idx int) {
-	if y == 1 {
-		_, hits := m.tabBar(m.width - 1)
+	ch := m.chrome()
+	w := m.width - 1
+	hit := func(hits []tabHit) int {
 		for _, h := range hits {
-			if x >= 1+h.x && x < 1+h.x+h.w { // +1: the row is drawn after a 1-column margin
-				return 0, h.idx
+			if x >= 1+h.x && x < 1+h.x+h.w {
+				return h.idx
 			}
 		}
-		return -1, -1
+		return -1
 	}
-	if y == 2 {
-		pos := m.currentPos()
-		if pos.top == 0 || pos.top > len(m.topFolders) || !m.isExpanded(pos.top-1) {
-			return -1, -1
+	switch {
+	case y == ch.tabsY:
+		_, hits := m.tabBar(w)
+		if i := hit(hits); i >= 0 {
+			return 0, i
 		}
-		kids := m.activeChildren()
-		if len(kids) == 0 {
-			return -1, -1
+	case ch.foldersY >= 0 && y == ch.foldersY:
+		_, hits := m.folderBar(w)
+		if i := hit(hits); i >= 0 {
+			return 1, i
 		}
-		top := m.topFolders[pos.top-1]
-		labels := m.subLabels(top)
-		col := 1 + lipgloss.Width(subTabPrefix(m.topFolderLabel(pos.top-1)))
-		for i, l := range labels {
-			ww := lipgloss.Width(styleSubInact.Render(l))
-			if i == pos.sub {
-				ww = lipgloss.Width(styleSubActive.Render(l))
-			}
-			if x >= col && x < col+ww {
-				return 1, i
-			}
-			col += ww + 2
-		}
-		return -1, -1
 	}
 	return -1, -1
 }

@@ -59,8 +59,8 @@ func TestTabBar_ActiveStaysVisibleAndClickable(t *testing.T) {
 				if !strings.HasPrefix(cell, label) {
 					t.Errorf("w=%d cursor=%d: span of tab %d reads %q, want prefix %q", width, cursor, h.idx, cell, label)
 				}
-				// the row is drawn after a 1-column margin; a click in the middle of the span hits this tab on row 1 only
-				if row, idx := m.tabHitTest(1+h.x+h.w/2, 1); row != 0 || idx != h.idx {
+				// the row is drawn after a 1-column margin; a click in the middle of the span hits this tab on the tabs row only
+				if row, idx := m.tabHitTest(1+h.x+h.w/2, m.chrome().tabsY); row != 0 || idx != h.idx {
 					t.Errorf("w=%d cursor=%d: click on tab %d resolved to (%d,%d)", width, cursor, h.idx, row, idx)
 				}
 				saw = saw || h.idx == cursor
@@ -72,13 +72,13 @@ func TestTabBar_ActiveStaysVisibleAndClickable(t *testing.T) {
 	}
 }
 
-func TestTabHitTest_WithMultipleAccountsRowOneIsStillTheTabRow(t *testing.T) {
-	// the account line used to push the tab row down to y=2 while hit-testing
-	// kept using y=1; the account now lives in the header, so row 1 is the tabs
+func TestTabHitTest_WithMultipleAccountsHitsTheChromeTabsRow(t *testing.T) {
+	// the tabs row sits where chrome() says (y=3 spacious, y=1 compact); the
+	// account context lives in the header, so it never shifts that row
 	m := tabsModel(120)
 	_, hits := m.tabBar(m.width - 1)
-	if row, _ := m.tabHitTest(1+hits[0].x+1, 1); row != 0 {
-		t.Errorf("click on the first tab at y=1 must hit it, got row %d", row)
+	if row, _ := m.tabHitTest(1+hits[0].x+1, m.chrome().tabsY); row != 0 {
+		t.Errorf("click on the first tab at y=%d must hit it, got row %d", m.chrome().tabsY, row)
 	}
 	if row, _ := m.tabHitTest(1+hits[0].x+1, 0); row != -1 {
 		t.Errorf("the header row is not clickable, got row %d", row)
@@ -86,21 +86,30 @@ func TestTabHitTest_WithMultipleAccountsRowOneIsStillTheTabRow(t *testing.T) {
 }
 
 func TestPreambleHasNoAccountLineAnymore(t *testing.T) {
-	m := tabsModel(120)
-	if got := m.preambleRows(); got != 3 { // header + tabs + divider
-		t.Errorf("preambleRows() = %d, want 3 (the account context lives in the header)", got)
+	m := tabsModel(120) // height 30 = spacious: header, divider, blank, tabs, blank
+	if got := m.preambleRows(); got != 5 {
+		t.Errorf("spacious preambleRows() = %d, want 5 (the account context lives in the header)", got)
+	}
+	m.height = 20 // compact: header, tabs, divider
+	if got := m.preambleRows(); got != 3 {
+		t.Errorf("compact preambleRows() = %d, want 3", got)
 	}
 }
 
-func TestTabBar_SyncSuffixSharesTheBudget(t *testing.T) {
+func TestTabBar_NoLongerCarriesTheSyncText(t *testing.T) {
+	// the sync age moved to the footer: it used to squeeze the tabs and could
+	// push the row past the terminal width as its length changed on its own
 	m := tabsModel(90)
 	m.lastSynced = time.Now().Add(-20 * time.Hour)
 	bar, hits := m.tabBar(m.width - 1)
 	if lipgloss.Width(bar) > m.width-1 {
-		t.Fatalf("bar+suffix %d > %d: %q", lipgloss.Width(bar), m.width-1, ansi.Strip(bar))
+		t.Fatalf("bar %d > %d: %q", lipgloss.Width(bar), m.width-1, ansi.Strip(bar))
 	}
-	if !strings.Contains(ansi.Strip(bar), "synced 20h ago") {
-		t.Errorf("sync status missing: %q", ansi.Strip(bar))
+	if strings.Contains(ansi.Strip(bar), "synced") {
+		t.Errorf("the tab row must not carry the sync text any more: %q", ansi.Strip(bar))
+	}
+	if !strings.Contains(ansi.Strip(m.renderHelpBar(140)), "synced 20h ago") {
+		t.Errorf("footer must carry the sync age: %q", ansi.Strip(m.renderHelpBar(140)))
 	}
 	for _, h := range hits {
 		if h.x+h.w > lipgloss.Width(bar) {
@@ -161,7 +170,7 @@ func TestHeaderCarriesAccountContextInTheMiddle(t *testing.T) {
 	if !strings.Contains(h, "notectl") || !strings.Contains(h, "All accounts (2)") {
 		t.Errorf("header = %q", h)
 	}
-	if strings.Index(h, "notectl") > strings.Index(h, "All accounts") || strings.Index(h, "All accounts") > strings.Index(h, time.Now().Format("2006")) {
+	if strings.Index(h, "notectl") > strings.Index(h, "All accounts") || strings.Index(h, "All accounts") > strings.Index(h, time.Now().Format("Jan")) {
 		t.Errorf("order must be name · context · date: %q", h)
 	}
 }

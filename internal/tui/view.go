@@ -234,13 +234,6 @@ func (m Model) renderPaletteBlock() string {
 
 func (m Model) renderSinglePane() string {
 	var b strings.Builder
-	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
-	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
-		b.WriteString(row2 + "\n")
-	}
-	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
-
 	if m.searching {
 		b.WriteString("  " + m.searchInput.View() + "\n\n")
 	}
@@ -272,8 +265,35 @@ func (m Model) renderSinglePane() string {
 		}
 	}
 
-	b.WriteString("\n" + m.renderHelpBar(m.width))
-	return b.String()
+	return m.frame(b.String())
+}
+
+// frame stacks the header chrome, the body and the footer into exactly
+// m.height lines (ui.Frame), so a shorter or taller body can never leave stale
+// lines behind or push the footer off screen.
+func (m Model) frame(body string) string {
+	return ui.Frame(m.height, m.renderChrome(), strings.TrimSuffix(body, "\n"), "\n "+m.renderHelpBar(m.width-1)) // 1-column margin like the header and tabs
+}
+
+// renderChrome draws the lines above the list: see the tier table in tabs.go.
+func (m Model) renderChrome() string {
+	w := m.width - 1
+	hdr := " " + m.renderAppHeader(w)
+	tabs := " " + m.renderTabRow1(w)
+	var folders []string
+	if row := m.renderTabRow2(w); row != "" {
+		folders = []string{" " + row}
+	}
+	div := styleDivider.Render(strings.Repeat("─", m.width))
+	var lines []string
+	if m.spacious() {
+		lines = append([]string{hdr, div, "", tabs}, folders...)
+		lines = append(lines, "")
+	} else {
+		lines = append([]string{hdr, tabs}, folders...)
+		lines = append(lines, div)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ── Two-pane (wide terminals) ─────────────────────────────────────────────────
@@ -284,12 +304,6 @@ func (m Model) renderTwoPane() string {
 	paneH := m.listHeight()
 
 	var b strings.Builder
-	b.WriteString(" " + m.renderAppHeader(m.width-1) + "\n")
-	b.WriteString(" " + m.renderTabRow1(m.width-1) + "\n")
-	if row2 := m.renderTabRow2(m.width - 1); row2 != "" {
-		b.WriteString(row2 + "\n")
-	}
-	b.WriteString(styleDivider.Render(strings.Repeat("─", m.width)) + "\n")
 
 	// search row replaces one line of the pane
 	if m.searching {
@@ -348,8 +362,7 @@ func (m Model) renderTwoPane() string {
 		b.WriteString(" " + l + " " + div + " " + r + "\n")
 	}
 
-	b.WriteString("\n" + m.renderHelpBar(m.width))
-	return b.String()
+	return m.frame(b.String())
 }
 
 // buildListLines pre-renders list rows with optional date group headers and preview lines.
@@ -388,33 +401,25 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 		if i == m.cursor {
 			cursorLine = len(lines)
 		}
-		rowStyle := lipgloss.NewStyle()
+		mode := rowNormal
 		switch {
 		case i == m.cursor:
-			rowStyle = styleSelected
+			mode = rowSelected
 		case i == m.hoverRow:
-			rowStyle = theme.HoverV2
+			mode = rowHover
 		}
-		lines = append(lines, formatNoteRow(n, w, rowStyle, m.searchQ))
+		lines = append(lines, formatNoteRow(n, w, mode, m.searchQ))
 		lineToNote = append(lineToNote, i)
 
 		if withPreview && n.Body != "" {
 			preview := firstBodyLine(n.Body)
 			if preview != "" {
-				avail := w - 16
+				avail := w - 2 - 16 // 2: the row gutter
 				if avail > 10 {
 					preview = runewidth.Truncate(preview, avail, "…")
 				}
-				pLine := strings.Repeat(" ", 16) + preview
-				switch {
-				case i == m.cursor:
-					pLine = styleSelected.Width(w).Render(pLine)
-				case i == m.hoverRow:
-					pLine = theme.HoverV2.Width(w).Render(pLine)
-				default:
-					pLine = styleMuted.Render(pLine)
-				}
-				lines = append(lines, pLine)
+				pLine := strings.Repeat(" ", 16) + styleMuted.Render(preview)
+				lines = append(lines, styledRow(w, mode, pLine))
 				lineToNote = append(lineToNote, i)
 			}
 		}
@@ -422,17 +427,9 @@ func (m Model) buildListLinesWithMapping(w int, withPreview bool) ([]string, int
 	return lines, cursorLine, lineToNote
 }
 
-// preambleRows returns the fixed-height chrome above the note list: app
-// header (it carries the account context) + row-1 notebook tabs + (if the active notebook has children AND is expanded —
-// see expandedTops) row-2 sub-notebook tabs + the divider line.
-func (m Model) preambleRows() int {
-	y := 3 // header + tab row 1 + divider
-	pos := m.currentPos()
-	if pos.top > 0 && pos.top <= len(m.topFolders) && m.isExpanded(pos.top-1) && len(m.activeChildren()) > 0 {
-		y++ // tab row 2
-	}
-	return y
-}
+// preambleRows returns the fixed-height chrome above the note list (see the
+// tier table in tabs.go: 5-6 lines spacious, 3-4 compact).
+func (m Model) preambleRows() int { return m.chrome().rows }
 
 // listStartY returns the number of preamble lines above the note list —
 // header, tab bar(s), divider, and (mode-dependent) an optional search
@@ -525,7 +522,7 @@ func (m Model) rowHitTest(x, y int) int {
 // first, then the name truncated, so a long account name never overflows.
 func (m Model) renderAppHeader(w int) string {
 	return ui.Header(w, styleHeader.Render("notectl"), styleTabParentRef.Render(m.headerContext()),
-		styleMuted.Render(time.Now().Format("Mon, 02 Jan 2006")))
+		styleMuted.Render(time.Now().Format("Mon 02 Jan")))
 }
 
 // renderHelpBar renders the one-line footer: key hints in priority order
@@ -544,6 +541,13 @@ func (m Model) renderHelpBar(w int) string {
 			sortIcon = "↓A-Z"
 		}
 		right = styleHelp.Render(fmt.Sprintf("%d/%d  %s", m.cursor+1, len(m.notes), sortIcon))
+	}
+	if sync := m.syncStatus(); sync != "" { // sync age sits left of the counter
+		if right != "" {
+			right = sync + "   " + right
+		} else {
+			right = sync
+		}
 	}
 	if m.err != nil {
 		return statusbar.Line(w, styleErr.Render("✗ "+m.err.Error()), "")

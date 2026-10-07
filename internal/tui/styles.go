@@ -80,7 +80,7 @@ var (
 	// its contents change with every parent and read better as a
 	// lightweight breadcrumb than another row of buttons.
 	styleTabParentRef = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleSubInact     = lipgloss.NewStyle().Foreground(adaptiveColor("241", "249"))
+	styleSubInact     = lipgloss.NewStyle().Foreground(colorMuted)
 	styleSubActive    = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(colorBlue)
 
 	// markdown
@@ -96,7 +96,7 @@ var (
 	styleDateToday = lipgloss.NewStyle().Foreground(adaptiveColor("214", "220")).Bold(true)
 	styleDateWeek  = lipgloss.NewStyle().Foreground(adaptiveColor("243", "246"))
 	styleDateMonth = lipgloss.NewStyle().Foreground(colorMuted)
-	styleDateOld   = lipgloss.NewStyle().Foreground(colorSubtle)
+	styleDateOld   = lipgloss.NewStyle().Foreground(colorMuted) // Subtle is too faint for the date column
 )
 
 // sourceTypes is the ordered list of source backends for the settings view.
