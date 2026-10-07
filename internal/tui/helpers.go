@@ -8,12 +8,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/missionctl-core/ui"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -134,15 +132,14 @@ const (
 // styledRow wraps row content in the 2-column gutter and the row highlight:
 // selected = accent bar + one continuous full-width background (ui.Row repaints
 // the background after every inner color, and lifts dimmed text to Muted so it
-// stays readable on it); hover = the same width in the hover background.
+// stays readable on it); hover = ui.HoverRow: the hover background WITHOUT
+// flattening the row's own colors (dates, tags).
 func styledRow(width int, mode rowMode, content string) string {
 	switch mode {
 	case rowSelected:
 		return ui.Row(width, true, content)
 	case rowHover:
-		inner := max(width-2, 0)
-		plain := ansi.Truncate(ansi.Strip(content), inner, "…")
-		return "  " + theme.HoverV2.Render(plain+strings.Repeat(" ", max(inner-lipgloss.Width(plain), 0)))
+		return ui.HoverRow(width, content)
 	}
 	return ui.Row(width, false, content)
 }

@@ -556,9 +556,7 @@ type tabHit struct{ idx, x, w int }
 
 // tabBar draws the Notebooks row with ui.Tabs (active pill, others dimmed,
 // count after the name; tabs far from the active one fold into "…") within w
-// columns, and works out where each visible tab sits by finding its
-// " label count " cell in the plain text. ui.Tabs only drops tabs from the
-// ends, so the visible ones are contiguous around the active tab. Shared by
+// columns. The click spans come straight from ui.TabsLayout, shared by
 // renderTabRow1 and tabHitTest so drawing and clicking can't drift apart.
 func (m Model) tabBar(w int) (string, []tabHit) {
 	lw := m.rowLabelW()
@@ -567,36 +565,10 @@ func (m Model) tabBar(w int) (string, []tabHit) {
 		label = rowLabel("Notebooks")
 	}
 	labels, counts, active := m.topLabels(), m.topCounts(), m.currentPos().top
-	bar := ui.Tabs(max(w-lw, 1), labels, active, counts)
-	plain := ansi.Strip(bar)
-	seg := func(i int) string {
-		if counts[i] > 0 {
-			return fmt.Sprintf(" %s %d ", labels[i], counts[i])
-		}
-		return " " + labels[i] + " "
-	}
-	col := func(byteIdx int) int { return lw + runewidth.StringWidth(plain[:byteIdx]) }
-
-	at := strings.Index(plain, seg(active))
-	if at < 0 {
-		return label + bar, nil
-	}
-	hits := []tabHit{{active, col(at), runewidth.StringWidth(seg(active))}}
-	for end, j := at+len(seg(active)), active+1; j < len(labels); j++ { // right neighbours
-		sg := seg(j)
-		if !strings.HasPrefix(plain[end:], " "+sg) {
-			break
-		}
-		hits = append(hits, tabHit{j, col(end + 1), runewidth.StringWidth(sg)})
-		end += 1 + len(sg)
-	}
-	for start, j := at, active-1; j >= 0; j-- { // left neighbours
-		sg := seg(j)
-		if !strings.HasSuffix(plain[:start], sg+" ") {
-			break
-		}
-		start -= 1 + len(sg)
-		hits = append(hits, tabHit{j, col(start), runewidth.StringWidth(sg)})
+	bar, spans := ui.TabsLayout(max(w-lw, 1), labels, active, counts)
+	hits := make([]tabHit, len(spans))
+	for i, sp := range spans {
+		hits[i] = tabHit{sp.Index, lw + sp.X0, sp.X1 - sp.X0}
 	}
 	return label + bar, hits
 }
