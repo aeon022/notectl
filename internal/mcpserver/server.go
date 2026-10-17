@@ -25,7 +25,7 @@ func Serve() error {
 	s.AddTool(toolRead(), handleRead)
 	s.AddTool(toolWrite(), handleWrite)
 	s.AddTool(toolSearch(), handleSearch)
-	s.AddTool(toolDelete(), handleDelete)
+	s.AddTool(toolDelete(), confirmed(handleDelete))
 	s.AddTool(toolSync(), handleSync)
 	s.AddTool(toolGetDailyNote(), handleGetDailyNote)
 	s.AddTool(toolAppendDailyNote(), handleAppendDailyNote)
@@ -72,6 +72,7 @@ func toolSearch() mcp.Tool {
 
 func toolDelete() mcp.Tool {
 	return mcp.NewTool("delete_note",
+		confirmParam,
 		mcp.WithDescription("Delete a note by title from the configured source (Apple Notes, Joplin, or the Obsidian vault). If multiple notes share the title, nothing is deleted — the matches are listed (with folder/account) so you can pass folder to pick one."),
 		mcp.WithString("title", mcp.Required(), mcp.Description("Note title (exact)")),
 		mcp.WithString("folder", mcp.Description("Folder to disambiguate when multiple notes share the title")),

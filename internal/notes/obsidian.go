@@ -88,6 +88,11 @@ func TargetPath(title, folder string) string {
 // other frontmatter key an existing file carries is dropped on overwrite.
 func Write(vaultPath, title, body string, tags []string, folder, eventID string) (*models.Note, error) {
 	dir := vaultPath
+	// folder comes from callers an AI agent can steer (MCP write_note): "../.." or an absolute path would
+	// write outside the vault. Delete already refuses these; Write must too.
+	if folder != "" && !filepath.IsLocal(folder) {
+		return nil, fmt.Errorf("refusing to write to %q: not a folder inside the vault", folder)
+	}
 	if folder != "" {
 		dir = filepath.Join(vaultPath, folder)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
