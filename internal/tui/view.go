@@ -824,13 +824,15 @@ func (m Model) renderSettings() string {
 	b.WriteString("\n")
 	b.WriteString("  " + styleMuted.Render(sourceTypes[m.sourceIdx].note) + "\n\n")
 
+	b.WriteString(styleLabel.Render("Theme:") + "\n  " + styleTabActive.Render(theme.Current()) + "  " + styleMuted.Render("ctrl+t switches · saved for the whole suite") + "\n\n")
+
 	if m.err != nil {
 		b.WriteString(styleErr.Render("✗ "+m.err.Error()) + "\n")
 	} else if m.status != "" {
 		b.WriteString(styleOK.Render("✓ "+m.status) + "\n")
 	}
 	return m.secondary("Settings", "", b.String(), "",
-		[2]string{"esc", "cancel"}, [2]string{"ctrl+s", "save"}, [2]string{"←/→", "source"})
+		[2]string{"esc", "cancel"}, [2]string{"ctrl+s", "save"}, [2]string{"←/→", "source"}, [2]string{"ctrl+t", "theme"})
 }
 
 // ── Markdown renderer ─────────────────────────────────────────────────────────

@@ -1140,6 +1140,11 @@ func (m Model) updateSettings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.view = viewList
 		return m, nil
+	case "ctrl+t":
+		if _, err := theme.Cycle(); err != nil {
+			m.err = err
+		}
+		return m, nil
 	case "left", "h":
 		if m.sourceIdx > 0 {
 			m.sourceIdx--
