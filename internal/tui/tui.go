@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/aeon022/missionctl-core/themepicker"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
@@ -65,9 +66,10 @@ type errMsg struct{ err error }
 // ── Model ─────────────────────────────────────────────────────────────────────
 
 type Model struct {
-	view   view
-	width  int
-	height int
+	themePicker themepicker.Picker // the "T" popup
+	view        view
+	width       int
+	height      int
 
 	// list
 	notes        []models.Note // filtered (by searchQ) view of allNotes
