@@ -266,9 +266,16 @@ func emptyHint() string {
 	}
 }
 
-// emptySuggestion is emptyHint without its "No notes — " lead, for the
-// emptystate block that shows "No notes" as its own title.
-func emptySuggestion() string { return strings.TrimPrefix(emptyHint(), "No notes — ") }
+// emptySuggestion is the first-run checklist of an empty note list: emptyHint without its
+// "No notes — " lead as the first step, then what else to try.
+func emptySuggestion() string {
+	return strings.Join([]string{
+		"○  " + strings.TrimPrefix(emptyHint(), "No notes — "),
+		"○  n   write your first note",
+		"○  :   open the command palette",
+		"○  T   pick a colour theme",
+	}, "\n")
+}
 
 func dateGroup(t time.Time) string {
 	now := time.Now()

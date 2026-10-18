@@ -152,6 +152,7 @@ func (m Model) helpContent() string {
 		Row("s", "sync").
 		Row("/", "search (esc clears)").
 		Row("t", "browse tags").
+		Row("T", "next colour theme (saved for the whole suite)").
 		Row("L", "link graph (browse [[wiki-links]])").
 		Row("?", "toggle this help").
 		Row("q", "quit").
@@ -249,7 +250,7 @@ func (m Model) renderSinglePane() string {
 	if m.loading {
 		b.WriteString(emptystate.Loading(m.width, listH, m.sp.View(), "Loading notes…") + "\n")
 	} else if len(m.notes) == 0 {
-		b.WriteString(emptystate.Render(m.width, listH, "📝", "No notes", emptySuggestion()) + "\n")
+		b.WriteString(emptystate.Render(m.width, listH, "📝", "Welcome to notectl", emptySuggestion()) + "\n")
 	} else {
 		lines, cursorLine := m.buildListLines(m.width, true)
 		start := 0
@@ -326,7 +327,7 @@ func (m Model) renderTwoPane() string {
 	if m.loading {
 		leftLines = strings.Split(emptystate.Loading(listContentW, paneH, m.sp.View(), "Loading notes…"), "\n")
 	} else if len(m.notes) == 0 {
-		leftLines = strings.Split(emptystate.Render(listContentW, paneH, "📝", "No notes", emptySuggestion()), "\n")
+		leftLines = strings.Split(emptystate.Render(listContentW, paneH, "📝", "Welcome to notectl", emptySuggestion()), "\n")
 	} else {
 		lines, cursorLine := m.buildListLines(listContentW, false)
 		start := 0

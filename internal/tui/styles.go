@@ -36,68 +36,76 @@ func adaptiveColor(light, dark string) color.Color {
 }
 
 var (
+	// Rebuilt by refreshStyles when the theme changes.
+	colorBlue, colorGreen, colorRed, colorMuted, colorSubtle, colorAmber, colorTabBg                                                                                                                                                                                                                                                                                                                      color.Color
+	styleHeader, styleDivider, styleHelp, styleErr, styleOK, styleMuted, styleBold, styleSelected, styleTag, styleFolder, styleLabel, styleSyncing, styleTabActive, styleTabInact, styleTabActiveDim, styleTabParentRef, styleSubInact, styleSubActive, styleMDH1, styleMDH2, styleMDH3, styleMDQuote, styleMDCode, styleMDBold, styleStrike, styleDateToday, styleDateWeek, styleDateMonth, styleDateOld lipgloss.Style
+)
+
+func init() {
+	refreshStyles()
+	theme.OnChange(refreshStyles)
+}
+
+// refreshStyles builds every cached colour and style from the active theme (live theme switching).
+func refreshStyles() {
 	// Shared across the suite via missionctl-core/theme.
-	colorBlue   = theme.BlueV2
-	colorGreen  = theme.GreenV2
-	colorRed    = theme.RedV2
-	colorMuted  = theme.MutedV2
+	colorBlue = theme.BlueV2
+	colorGreen = theme.GreenV2
+	colorRed = theme.RedV2
+	colorMuted = theme.MutedV2
 	colorSubtle = theme.SubtleV2
-	colorAmber  = theme.AmberV2
-	colorTabBg  = adaptiveColor("252", "235")
-
-	styleHeader   = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleDivider  = lipgloss.NewStyle().Foreground(colorSubtle)
-	styleHelp     = lipgloss.NewStyle().Foreground(colorMuted)
-	styleErr      = lipgloss.NewStyle().Foreground(colorRed)
-	styleOK       = lipgloss.NewStyle().Foreground(colorGreen)
-	styleMuted    = lipgloss.NewStyle().Foreground(colorMuted)
-	styleBold     = lipgloss.NewStyle().Bold(true)
+	colorAmber = theme.AmberV2
+	colorTabBg = adaptiveColor("252", "235")
+	styleHeader = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
+	styleDivider = lipgloss.NewStyle().Foreground(colorSubtle)
+	styleHelp = lipgloss.NewStyle().Foreground(colorMuted)
+	styleErr = lipgloss.NewStyle().Foreground(colorRed)
+	styleOK = lipgloss.NewStyle().Foreground(colorGreen)
+	styleMuted = lipgloss.NewStyle().Foreground(colorMuted)
+	styleBold = lipgloss.NewStyle().Bold(true)
 	styleSelected = lipgloss.NewStyle().
-			Background(theme.SelectedBgV2).
-			Foreground(theme.SelectedFgV2).
-			Bold(true)
-	styleTag     = lipgloss.NewStyle().Foreground(adaptiveColor("33", "75"))
-	styleFolder  = lipgloss.NewStyle().Foreground(adaptiveColor("136", "178"))
-	styleLabel   = lipgloss.NewStyle().Foreground(colorBlue).Width(9)
+		Background(theme.SelectedBgV2).
+		Foreground(theme.SelectedFgV2).
+		Bold(true)
+	styleTag = lipgloss.NewStyle().Foreground(adaptiveColor("33", "75"))
+	styleFolder = lipgloss.NewStyle().Foreground(adaptiveColor("136", "178"))
+	styleLabel = lipgloss.NewStyle().Foreground(colorBlue).Width(9)
 	styleSyncing = lipgloss.NewStyle().Foreground(adaptiveColor("214", "220"))
-
 	styleTabActive = lipgloss.NewStyle().Bold(true).
-			Foreground(theme.OnAccentV2).
-			Background(colorBlue).
-			Padding(0, 1)
+		Foreground(theme.OnAccentV2).
+		Background(colorBlue).
+		Padding(0, 1)
 	styleTabInact = lipgloss.NewStyle().
-			Foreground(adaptiveColor("237", "252")).
-			Background(colorTabBg).
-			Padding(0, 1)
+		Foreground(adaptiveColor("237", "252")).
+		Background(colorTabBg).
+		Padding(0, 1)
 	// styleTabActiveDim marks the row-1 tab whose sub-notebook is active in
 	// row 2 — still "selected" (bold, tinted) but visually receded since one
 	// of its children (row 2) is the actual current focus.
 	styleTabActiveDim = lipgloss.NewStyle().Bold(true).
-				Foreground(colorBlue).
-				Background(colorTabBg).
-				Padding(0, 1)
+		Foreground(colorBlue).
+		Background(colorTabBg).
+		Padding(0, 1)
 	// Row 2 (sub-notebooks) is deliberately plain text, not filled pills —
 	// its contents change with every parent and read better as a
 	// lightweight breadcrumb than another row of buttons.
 	styleTabParentRef = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleSubInact     = lipgloss.NewStyle().Foreground(colorMuted)
-	styleSubActive    = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(colorBlue)
-
+	styleSubInact = lipgloss.NewStyle().Foreground(colorMuted)
+	styleSubActive = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(colorBlue)
 	// markdown
-	styleMDH1    = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
-	styleMDH2    = lipgloss.NewStyle().Bold(true).Foreground(adaptiveColor("26", "39"))
-	styleMDH3    = lipgloss.NewStyle().Bold(true)
+	styleMDH1 = lipgloss.NewStyle().Bold(true).Foreground(colorBlue)
+	styleMDH2 = lipgloss.NewStyle().Bold(true).Foreground(adaptiveColor("26", "39"))
+	styleMDH3 = lipgloss.NewStyle().Bold(true)
 	styleMDQuote = lipgloss.NewStyle().Foreground(colorMuted)
-	styleMDCode  = lipgloss.NewStyle().Foreground(adaptiveColor("130", "215"))
-	styleMDBold  = lipgloss.NewStyle().Bold(true)
-	styleStrike  = lipgloss.NewStyle().Strikethrough(true).Foreground(colorMuted)
-
+	styleMDCode = lipgloss.NewStyle().Foreground(adaptiveColor("130", "215"))
+	styleMDBold = lipgloss.NewStyle().Bold(true)
+	styleStrike = lipgloss.NewStyle().Strikethrough(true).Foreground(colorMuted)
 	// date age colors — amber for today (matches mailctl styleToday), fading to subtle
 	styleDateToday = lipgloss.NewStyle().Foreground(adaptiveColor("214", "220")).Bold(true)
-	styleDateWeek  = lipgloss.NewStyle().Foreground(adaptiveColor("243", "246"))
+	styleDateWeek = lipgloss.NewStyle().Foreground(adaptiveColor("243", "246"))
 	styleDateMonth = lipgloss.NewStyle().Foreground(colorMuted)
-	styleDateOld   = lipgloss.NewStyle().Foreground(colorMuted) // Subtle is too faint for the date column
-)
+	styleDateOld = lipgloss.NewStyle().Foreground(colorMuted) // Subtle is too faint for the date column
+}
 
 // sourceTypes is the ordered list of source backends for the settings view.
 var sourceTypes = []struct {
@@ -135,6 +143,7 @@ var paletteCommands = []palette.Command{
 	{Name: "search", Desc: "Search notes", Key: "/"},
 	{Name: "tags", Desc: "Browse tags", Key: "t"},
 	{Name: "graph", Desc: "Link graph (browse [[wiki-links]])", Key: "L"},
+	{Name: "theme", Desc: "Next colour theme (saved for the whole suite)", Key: "T"},
 	{Name: "help", Desc: "Show help", Key: "?"},
 	{Name: "quit", Desc: "Quit notectl", Key: "q"},
 }

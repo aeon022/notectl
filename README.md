@@ -194,6 +194,7 @@ notectl mcp
 | `d` | Delete note (confirm with `y`) |
 | `o` | Open in `$EDITOR` |
 | `s` | Sync vault |
+| `T` | Next colour theme — switches live and is saved for the whole suite |
 | `H` | Toggle hiding empty notebooks |
 | `/` | Search title + body |
 | `tab` / `shift+tab` | Switch folder tab |

@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/aeon022/missionctl-core/lastsync"
 	"github.com/aeon022/missionctl-core/palette"
+	"github.com/aeon022/missionctl-core/theme"
 	"github.com/aeon022/notectl/internal/config"
 	"github.com/aeon022/notectl/internal/models"
 	"github.com/aeon022/notectl/internal/notes"
@@ -777,6 +778,15 @@ func (m Model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.paletteCursor = 0
 		m.paletteInput.SetValue("")
 		return m, m.paletteInput.Focus()
+	case "T": // live theme switch; the choice is saved for every suite tool
+		name, err := theme.Cycle()
+		if err != nil {
+			m.status = "Theme: " + err.Error()
+		} else {
+			m.status = "Theme: " + name
+		}
+		m.statusTime = time.Now()
+		return m, nil
 	case "t":
 		m.tagCursor = 0
 		m.view = viewTags

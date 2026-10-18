@@ -148,7 +148,7 @@ func TestEmptyAndLoadingStates(t *testing.T) {
 	}
 	m.loading = false
 	out := ansi.Strip(m.renderList())
-	if !strings.Contains(out, "No notes") || !strings.Contains(out, emptySuggestion()) {
+	if !strings.Contains(out, "Welcome to notectl") || !strings.Contains(out, strings.SplitN(emptySuggestion(), "\n", 2)[0]) {
 		t.Errorf("empty state should show title and the source-specific suggestion:\n%s", out)
 	}
 	if emptySuggestion() == emptyHint() {
