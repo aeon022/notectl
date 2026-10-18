@@ -143,7 +143,7 @@ var paletteCommands = []palette.Command{
 	{Name: "search", Desc: "Search notes", Key: "/"},
 	{Name: "tags", Desc: "Browse tags", Key: "t"},
 	{Name: "graph", Desc: "Link graph (browse [[wiki-links]])", Key: "L"},
-	{Name: "theme", Desc: "Next colour theme (saved for the whole suite)", Key: "T"},
+	{Name: "theme", Desc: "Colour theme picker with live preview (saved for the whole suite)", Key: "T"},
 	{Name: "help", Desc: "Show help", Key: "?"},
 	{Name: "quit", Desc: "Quit notectl", Key: "q"},
 }

@@ -163,7 +163,7 @@ func (m Model) helpContent() string {
 		Row("s", "sync").
 		Row("/", "search (esc clears)").
 		Row("t", "browse tags").
-		Row("T", "next colour theme (saved for the whole suite)").
+		Row("T", "colour theme picker with live preview (saved for the whole suite)").
 		Row("L", "link graph (browse [[wiki-links]])").
 		Row("?", "toggle this help").
 		Row("q", "quit").
