@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"fmt"
+	"github.com/aeon022/notectl/internal/models"
+	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"testing"
 
@@ -43,5 +46,28 @@ func TestSettingsThemeKeyCyclesAndShowsTheme(t *testing.T) {
 	}
 	if !strings.Contains(tuitest.Text(mm), theme.Current()) {
 		t.Errorf("the settings screen should name the active theme:\n%s", tuitest.Text(mm))
+	}
+}
+
+func TestLinkGraphScrollsWithTheCursor(t *testing.T) {
+	m := newNotes(t, sampleNotes()...)
+	m.loading = false
+	m.width, m.height = 80, 14
+	m.view = viewGraph
+	focus := models.Note{ID: "f", Title: "Focus"}
+	m.graphFocus = &focus
+	for i := 0; i < 30; i++ {
+		m.graphOut = append(m.graphOut, models.Note{ID: fmt.Sprintf("o%d", i), Title: fmt.Sprintf("Linked note %02d", i)})
+	}
+	if out := ansi.Strip(m.renderGraph()); strings.Contains(out, "Linked note 29") || !strings.Contains(out, "Linked note 00") {
+		t.Fatalf("at the top the first neighbours show, the last do not:\n%s", out)
+	}
+	m.graphCursor = 29
+	out := ansi.Strip(m.renderGraph())
+	if !strings.Contains(out, "› ──▶ Linked note 29") {
+		t.Errorf("the selected neighbour must stay visible while scrolling:\n%s", out)
+	}
+	if n := strings.Count(out, "\n") + 1; n > m.height {
+		t.Errorf("the frame must keep its height: %d lines for height %d", n, m.height)
 	}
 }

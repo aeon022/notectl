@@ -93,35 +93,42 @@ func (m Model) renderGraph() string {
 	if m.graphFocus == nil {
 		return ""
 	}
-	var b strings.Builder
-	cursor := 0
+	var lines []string
+	cursor, cursorLine := 0, 0
 	renderNeighbor := func(n models.Note, arrow string) {
 		row := arrow + " " + n.Title
 		if cursor == m.graphCursor {
-			b.WriteString("  " + styleSelected.Render("› "+row) + "\n")
+			lines = append(lines, "  "+styleSelected.Render("› "+row))
+			cursorLine = len(lines) - 1
 		} else {
-			b.WriteString("    " + styleMuted.Render(row) + "\n")
+			lines = append(lines, "    "+styleMuted.Render(row))
 		}
 		cursor++
 	}
 
 	if len(m.graphOut) == 0 {
-		b.WriteString("    " + styleHelp.Render("(no outgoing links)") + "\n")
+		lines = append(lines, "    "+styleHelp.Render("(no outgoing links)"))
 	}
 	for _, n := range m.graphOut {
 		renderNeighbor(n, "──▶")
 	}
 
-	b.WriteString("\n  " + styleTag.Render("┃ "+m.graphFocus.Title) + "\n\n")
+	lines = append(lines, "", "  "+styleTag.Render("┃ "+m.graphFocus.Title), "")
 
 	if len(m.graphIn) == 0 {
-		b.WriteString("    " + styleHelp.Render("(no backlinks)") + "\n")
+		lines = append(lines, "    "+styleHelp.Render("(no backlinks)"))
 	}
 	for _, n := range m.graphIn {
 		renderNeighbor(n, "◀──")
 	}
 
-	return m.secondary("Link Graph", m.graphFocus.Title, b.String(), "",
+	// A graph taller than the terminal scrolls with the cursor instead of being cut off.
+	if room := m.height - m.chromeLines() - 2; m.height > 0 && room > 0 && len(lines) > room {
+		off := min(max(cursorLine-room/2, 0), len(lines)-room)
+		lines = lines[off : off+room]
+	}
+
+	return m.secondary("Link Graph", m.graphFocus.Title, strings.Join(lines, "\n"), "",
 		[2]string{"esc", "back"}, [2]string{"j/k", "move"}, [2]string{"enter", "re-focus"}, [2]string{"d", "open note"})
 }
 
