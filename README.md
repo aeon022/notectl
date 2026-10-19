@@ -4,6 +4,16 @@ Terminal notes client — Obsidian vaults, Apple Notes, or Joplin. Part of the [
 
 Syncs notes from your chosen source (or several at once) to a local SQLite cache, exposes a fast full-screen TUI, and runs an MCP server so AI agents can read and write your notes.
 
+![notectl demo](docs/demo.gif)
+
+**Install**
+
+```bash
+brew install aeon022/tap/notectl
+```
+
+Prebuilt binaries for macOS and Linux (arm64, amd64) are on the [Releases](https://github.com/aeon022/notectl/releases) page. Questions: see [SUPPORT.md](SUPPORT.md).
+
 ---
 
 ## Quick Start
