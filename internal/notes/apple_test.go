@@ -1,6 +1,7 @@
 package notes
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -185,5 +186,35 @@ func TestCleanLineMarkers(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("cleanLineMarkers(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestRefuseChecklistOverwrite(t *testing.T) {
+	orig := checklistState
+	t.Cleanup(func() { checklistState = orig })
+
+	checklistState = func(string) (map[string]bool, error) { return map[string]bool{"Windeln": false}, nil }
+	if err := refuseChecklistOverwrite("x"); !errors.Is(err, ErrChecklistNote) {
+		t.Fatalf("a checklist note must be refused, got %v", err)
+	}
+	checklistState = func(string) (map[string]bool, error) { return nil, errors.New("no access") }
+	if err := refuseChecklistOverwrite("x"); err == nil || errors.Is(err, ErrChecklistNote) {
+		t.Fatalf("unreadable state must refuse with its own error, got %v", err)
+	}
+	checklistState = func(string) (map[string]bool, error) { return map[string]bool{}, nil }
+	if err := refuseChecklistOverwrite("x"); err != nil {
+		t.Fatalf("a plain note may be written, got %v", err)
+	}
+}
+
+func TestMarkChecklistsUsesTheRealStateAndLeavesBulletsAlone(t *testing.T) {
+	state := map[string]bool{"Windeln": true, "Tücher": false, "Tom & Jerry": false}
+	body := "Packliste\n• Windeln\n  ☐ Tücher\n• Tom &amp; Jerry\n- nur ein Punkt\nText mit - Strich"
+	want := "Packliste\n- [x] Windeln\n  - [ ] Tücher\n- [ ] Tom &amp; Jerry\n- nur ein Punkt\nText mit - Strich"
+	if got := MarkChecklists(body, state); got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if HasListItems("nur Text\nund Text") || !HasListItems("a\n• b") {
+		t.Error("HasListItems")
 	}
 }

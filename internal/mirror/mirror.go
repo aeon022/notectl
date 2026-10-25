@@ -19,6 +19,7 @@ type Report struct {
 	Updated        int // existing notes pushed to the other side
 	LinkedExisting int // bootstrap matches that needed no content push
 	PendingDeletes int // newly queued this pass — see ApplyPendingDeletes
+	Protected      int // Apple notes with a native checklist that were left untouched — see pushToApple
 	Errors         []string
 }
 
@@ -114,7 +115,12 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, ex
 				"create in obsidian %q (folder %q): would overwrite existing note %q — skipped", n.Title, n.Folder, clash.Path))
 			continue
 		}
-		newNote, err := notes.Write(vaultPath, n.Title, n.Body, n.Tags, n.Folder, n.EventID)
+		mdBody, err := obsidianBody(n.ID, n.Body, notes.ChecklistState)
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("create in obsidian %q: skipped — %v", n.Title, err))
+			continue
+		}
+		newNote, err := notes.Write(vaultPath, n.Title, mdBody, n.Tags, n.Folder, n.EventID)
 		if err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("create in obsidian %q: %v", n.Title, err))
 			continue
@@ -135,8 +141,15 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, ex
 
 	for _, p := range d.PushToApple {
 		body := appleBody(p.Title, stripLeadingTitleHeading(p.Title, p.Body))
-		if err := notes.UpdateBody(p.Link.AppleID, notes.TextToHTML(body)); err != nil {
+		wrote, err := pushToApple(p.Link.AppleID, notes.TextToHTML(body), notes.ChecklistState, notes.UpdateBody)
+		if err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("update apple %q: %v", p.Title, err))
+			continue
+		}
+		if !wrote {
+			report.Protected++
+			report.Errors = append(report.Errors, fmt.Sprintf(
+				"apple note %q has a native checklist — left untouched (a write from the vault would turn the checkboxes into plain bullets); change it in Notes, or remove the checklist there first", p.Title))
 			continue
 		}
 		appleWrites = append(appleWrites, appleWrite{
@@ -146,7 +159,12 @@ func Sync(ctx context.Context, s *store.Store, vaultPath, appleFolder string, ex
 
 	for _, p := range d.PushToObsidian {
 		old := obsByID[p.Link.ObsidianID] // zero value if this is a fresh bootstrap link — Tags is then just nil, which is fine
-		newNote, err := notes.Write(vaultPath, p.Title, p.Body, old.Tags, p.Folder, old.EventID)
+		mdBody, err := obsidianBody(p.Link.AppleID, p.Body, notes.ChecklistState)
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("update obsidian %q: skipped — %v", p.Title, err))
+			continue
+		}
+		newNote, err := notes.Write(vaultPath, p.Title, mdBody, old.Tags, p.Folder, old.EventID)
 		if err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("update obsidian %q: %v", p.Title, err))
 			continue
@@ -360,4 +378,36 @@ func ApplyPendingDeletes(ctx context.Context, s *store.Store, vaultPath string, 
 		applied++
 	}
 	return applied, errs, nil
+}
+
+// pushToApple writes html to an existing Apple note — unless the note holds a native checklist, or that
+// cannot be ruled out. Notes.app keeps checkbox state in its own database and AppleScript's body
+// cannot express it, so any whole-body write would flatten the checkboxes into bullets for good. A
+// checklist note therefore never gets overwritten: wrote=false, no error, the caller reports the conflict.
+// Unreadable state counts as "might be a checklist" and is an error, never a write.
+func pushToApple(appleID, html string, state func(string) (map[string]bool, error), write func(id, html string) error) (wrote bool, err error) {
+	st, err := state(appleID)
+	if err != nil {
+		return false, fmt.Errorf("cannot tell whether the note has a checklist, so not writing: %w", err)
+	}
+	if len(st) > 0 {
+		return false, nil
+	}
+	return true, write(appleID, html)
+}
+
+// obsidianBody is the Apple body as it should land in the vault: real checklist items become "- [ ]" /
+// "- [x]" (AppleScript hands back checklists and bullets alike, so the truth comes from Notes' own
+// database via state). If the body has list items but the state cannot be read, the note is skipped
+// with an error — writing it anyway would turn checkboxes into bullets. Only the vault copy is
+// converted; the stored Apple-side hash keeps using the body as Apple delivered it.
+func obsidianBody(appleID, body string, state func(string) (map[string]bool, error)) (string, error) {
+	if !notes.HasListItems(body) {
+		return body, nil
+	}
+	st, err := state(appleID)
+	if err != nil {
+		return "", fmt.Errorf("cannot read the note's checklist state, so not copying it as bullets: %w", err)
+	}
+	return notes.MarkChecklists(body, st), nil
 }

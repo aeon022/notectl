@@ -1,6 +1,7 @@
 package notes
 
 import (
+	"errors"
 	"fmt"
 	"github.com/aeon022/missionctl-core/applescript"
 	"html"
@@ -255,6 +256,9 @@ func UpsertApple(title, body, folder string) (string, error) {
 	}
 	if matchID == "" {
 		return WriteApple("", title, TextToHTML(body), folder)
+	}
+	if err := refuseChecklistOverwrite(matchID); err != nil {
+		return "", err
 	}
 	// Update path: body's first line has to carry the title itself (see
 	// WriteApple's doc comment) — TextToHTML(title + body) mirrors what the
@@ -1045,4 +1049,67 @@ func parseAppleNotes(out string) []models.Note {
 		notes = append(notes, n)
 	}
 	return notes
+}
+
+// checklistState is the lookup refuseChecklistOverwrite uses; tests replace it.
+var checklistState = ChecklistState
+
+// ErrChecklistNote is returned instead of overwriting an Apple note that holds a native checklist.
+var ErrChecklistNote = errors.New("the Apple note has a native checklist; a text write would flatten its checkboxes into bullets — edit it in Notes or in notectl's own editor")
+
+// refuseChecklistOverwrite guards the whole-body writers that work from plain text (notectl write, the
+// write_note MCP tool): they cannot express checkbox state, so they must never replace a checklist note.
+// If the note's state cannot be read the write is refused too — better a failed write than a lost checklist.
+func refuseChecklistOverwrite(appleID string) error {
+	st, err := checklistState(appleID)
+	if err != nil {
+		return fmt.Errorf("cannot tell whether the note has a checklist, so not overwriting it: %w", err)
+	}
+	if len(st) > 0 {
+		return ErrChecklistNote
+	}
+	return nil
+}
+
+var listMarkers = []string{"• ", "- ", "* ", "☐ ", "☑ "}
+
+func splitListLine(line string) (indent, marker, text string, ok bool) {
+	t := strings.TrimLeft(line, " \t")
+	indent = line[:len(line)-len(t)]
+	for _, m := range listMarkers {
+		if strings.HasPrefix(t, m) {
+			return indent, m, strings.TrimSpace(strings.TrimPrefix(t, m)), true
+		}
+	}
+	return "", "", "", false
+}
+
+// HasListItems reports whether body has any bullet or checkbox line, i.e. whether its checklist state matters.
+func HasListItems(body string) bool {
+	for _, l := range strings.Split(body, "\n") {
+		if _, _, _, ok := splitListLine(l); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkChecklists rewrites list lines whose text is a real checklist item in state (see ChecklistState) as
+// markdown task items, "- [ ] text" / "- [x] text". Everything else, plain bullets included, stays as it is.
+func MarkChecklists(body string, state map[string]bool) string {
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		indent, _, text, ok := splitListLine(l)
+		if !ok {
+			continue
+		}
+		if done, isItem := state[normalizeChecklistText(text)]; isItem {
+			box := "- [ ] "
+			if done {
+				box = "- [x] "
+			}
+			lines[i] = indent + box + text
+		}
+	}
+	return strings.Join(lines, "\n")
 }
