@@ -241,3 +241,6 @@ echo -e "     ${YELLOW}(warnt, falls vault_path noch auf dem Standardpfad steht 
 echo -e "  4. TUI starten:                  ${GREEN}${BOLD}notectl${NC}"
 echo ""
 
+
+# man pages (best effort): man notectl
+mkdir -p "$HOME/.local/share/man/man1" && "${INSTALL_DIR:-$HOME/.local/bin}/notectl" man "$HOME/.local/share/man/man1" >/dev/null 2>&1 || true
